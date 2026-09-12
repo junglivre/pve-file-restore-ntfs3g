@@ -1,0 +1,104 @@
+diff --git a/debian/changelog b/debian/changelog
+index 0da6726..8d8cff8 100644
+--- a/debian/changelog
++++ b/debian/changelog
+@@ -1,3 +1,11 @@
++proxmox-backup-restore-image (1.0.0+ntfs3g1) trixie; urgency=medium
++
++  * Enable FUSE and include ntfs-3g for File Restore NTFS fallback.
++  * Include the read-only ntfs-3g plugin for Windows Server deduplication
++    reparse points (0x80000013), with 0x0103 support.
++
++ -- MasterMind TI <support@mastermind.ti>  Sat, 12 Sep 2026 18:10:00 -0300
++
+ proxmox-backup-restore-image (1.0.0) trixie; urgency=medium
+ 
+   * re-build for Debian 13 "Trixie" based Proxmox VE 9.
+diff --git a/debian/control b/debian/control
+index 4c24be5..9b4f4f9 100644
+--- a/debian/control
++++ b/debian/control
+@@ -29,7 +29,9 @@ Build-Depends: apt-rdepends,
+                libtirpc-dev,
+                libtool,
+                lintian,
++               ntfs-3g-dev,
+                perl,
++               pkg-config,
+                python3,
+                rustc,
+                sphinx-common,
+diff --git a/src/Makefile b/src/Makefile
+index cb9bb85..3113d0e 100644
+--- a/src/Makefile
++++ b/src/Makefile
+@@ -11,6 +11,7 @@ SHIM_DIR=init-shim-rs
+ KERNEL_IMG=$(BUILDDIR)/bzImage
+ INITRAMFS_IMG=$(INITRAMFS_BUILDDIR)/initramfs.img
+ INITRAMFS_IMG_DBG=$(INITRAMFS_BUILDDIR)/initramfs-debug.img
++DEDUP_PLUGIN=ntfs-3g-dedup-plugin/.libs/ntfs-plugin-80000013.so
+ 
+ ZFS_TOOLS=$(BUILDDIR)/zfstools
+ 
+@@ -86,7 +87,16 @@ $(ZFS_TOOLS): zfs.prepared
+ 	# absolute path required for 'make install'
+ 	$(MAKE) -C $(BUILDDIR)/$(ZFSONLINUX_SUBMODULE) install DESTDIR=$(PWD)/$(ZFS_TOOLS)
+ 
+-$(INITRAMFS_IMG): $(BUILDDIR).prepared $(RUST_SRC) build_initramfs.sh $(ZFS_TOOLS)
++.PHONY: dedup-plugin
++dedup-plugin:
++	mkdir -p build/pkgconfig
++	ln -sf $$(pkg-config --variable=pcfiledir fuse3)/fuse3.pc build/pkgconfig/fuse.pc
++	cd ntfs-3g-dedup-plugin; \
++	    PKG_CONFIG_PATH=../build/pkgconfig:$$PKG_CONFIG_PATH autoreconf -fi && \
++	    PKG_CONFIG_PATH=../build/pkgconfig:$$PKG_CONFIG_PATH ./configure && \
++	    $(MAKE)
++
++$(INITRAMFS_IMG): $(BUILDDIR).prepared $(RUST_SRC) build_initramfs.sh $(ZFS_TOOLS) dedup-plugin
+ 	cd $(SHIM_DIR); cargo build --release
+ 	sh build_initramfs.sh
+ 
+diff --git a/src/build_initramfs.sh b/src/build_initramfs.sh
+index 4e2445c..de550c9 100755
+--- a/src/build_initramfs.sh
++++ b/src/build_initramfs.sh
+@@ -35,6 +35,7 @@ add_pkgs() {
+         done
+         # debconf and gcc are unnecessary, libboost-regex doesn't install on bullseye
+         DEPS=$(echo "$DEPS" |\
++            sed -E 's/libdebconfclient([[:digit:]])?//g' |\
+             sed -E 's/debconf(-2\.0)?//g' |\
+             sed -E 's/libboost-regex([[:digit:]]\.[[:digit:]]+)?//g' |\
+             sed -E 's/gcc-.{1,2}-base//g' |\
+@@ -90,6 +91,7 @@ add_pkgs "
+     libgcrypt20:amd64 \
+     libtirpc3t64:amd64 \
+     lvm2:amd64 \
++    ntfs-3g:amd64 \
+     thin-provisioning-tools:amd64 \
+ " 'base'
+ 
+@@ -103,6 +105,11 @@ if [ -z "$DOWNLOAD_ONLY" ]; then
+     cp -a ../zfstools/lib/* "$ROOT/lib/"
+     cp -a ../zfstools/usr/* "$ROOT/usr/"
+ 
++    echo "install ntfs-3g Windows Server deduplication plugin"
++    install -D -m 0555 \
++        ../../ntfs-3g-dedup-plugin/.libs/ntfs-plugin-80000013.so \
++        "$ROOT/usr/lib/x86_64-linux-gnu/ntfs-3g/ntfs-plugin-80000013.so"
++
+     echo "cleanup unused data from base dependencies"
+     rm -rf ${ROOT:?}/usr/share # contains only docs and debian stuff
+     rm -rf ${ROOT:?}/usr/local/include # header files
+diff --git a/src/config-base b/src/config-base
+index fcebf07..eb0355e 100644
+--- a/src/config-base
++++ b/src/config-base
+@@ -153,6 +153,7 @@ CONFIG_MSDOS_FS=y
+ CONFIG_VFAT_FS=y
+ CONFIG_EXFAT_FS=y
+ CONFIG_EXFAT_DEFAULT_IOCHARSET="utf8"
++CONFIG_FUSE_FS=y
+ 
+ # memory hotplug
+ CONFIG_MEMORY_HOTPLUG=y

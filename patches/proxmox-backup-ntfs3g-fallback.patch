@@ -1,0 +1,33 @@
+diff --git a/debian/changelog b/debian/changelog
+index fa564e9..91eecfd 100644
+--- a/debian/changelog
++++ b/debian/changelog
+@@ -1,3 +1,9 @@
++rust-proxmox-backup (4.2.5-1+ntfs3g1) trixie; urgency=medium
++
++  * file-restore: fall back to ntfs-3g after in-kernel mounts fail.
++
++ -- MasterMind TI <support@mastermind.ti>  Sat, 12 Sep 2026 18:10:00 -0300
++
+ rust-proxmox-backup (4.2.5-1) trixie; urgency=medium
+ 
+   * backup: harden the handling of client supplied backup manifests:
+diff --git a/proxmox-restore-daemon/src/proxmox_restore_daemon/disk.rs b/proxmox-restore-daemon/src/proxmox_restore_daemon/disk.rs
+index 751bc83..6d1a7fd 100644
+--- a/proxmox-restore-daemon/src/proxmox_restore_daemon/disk.rs
++++ b/proxmox-restore-daemon/src/proxmox_restore_daemon/disk.rs
+@@ -344,5 +344,14 @@ impl Filesystems {
+             }
+         }
+ 
++        info!("All provided in-kernel filesystems failed: try FUSE mount using ntfs-3g");
++
++        let mut cmd = Command::new("/usr/bin/ntfs-3g");
++        cmd.args(["-o", "ro", source, target].iter());
++        match run_command(cmd, None) {
++            Ok(_) => return Ok(()),
++            Err(err) => warn!("ntfs-3g mount failed for '{source}': {err:#}"),
++        }
++
+         bail!("all mounts failed or no supported file system")
+     }

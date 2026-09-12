@@ -1,0 +1,34 @@
+diff --git a/Makefile.am b/Makefile.am
+index 90b16ea..3551b2a 100755
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -4,14 +4,12 @@ EXTRA_DIST = README COPYING
+ 
+ plugindir = $(libdir)/ntfs-3g
+ 
+-FUSE_CFLAGS = $(FUSE_MODULE_CFLAGS) -DUSE_DOTNET
++FUSE_CFLAGS = $(FUSE_MODULE_CFLAGS)
+ FUSE_LIBS   = $(FUSE_MODULE_LIBS)
+ 
+ plugin_LTLIBRARIES = ntfs-plugin-80000013.la
+ 
+-ntfs_plugin_80000013_la_SOURCES =	\
+-	src/dedup.c \
+-	src/dotnet.c
++ntfs_plugin_80000013_la_SOURCES = src/dedup.c
+ 
+ ntfs_plugin_80000013_la_LDFLAGS  = -module -shared -avoid-version -no-undefined
+ ntfs_plugin_80000013_la_CPPFLAGS = -D_FILE_OFFSET_BITS=64
+diff --git a/src/dedup.c b/src/dedup.c
+index 60bfa6b..e043715 100755
+--- a/src/dedup.c
++++ b/src/dedup.c
+@@ -62,7 +62,7 @@
+  * request a specific FUSE API version.  (It's required on FreeBSD, and it's
+  * probably a good idea to request the same version used by NTFS-3G anyway.)
+  */
+-#define FUSE_USE_VERSION 26
++#define FUSE_USE_VERSION 30
+ #include <fuse.h>
+ 
+ #ifdef HAVE_STRING_H
