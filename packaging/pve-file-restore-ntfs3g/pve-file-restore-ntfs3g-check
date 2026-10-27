@@ -32,7 +32,7 @@ restore_image_version=$(pkg_version proxmox-backup-restore-image)
 
 patched=false
 if [ -n "$file_restore_version" ] && [ -r "$DAEMON" ] \
-    && strings "$DAEMON" | grep -qF 'try FUSE mount using ntfs-3g'; then
+    && grep -qF 'try FUSE mount using ntfs-3g' < <(strings "$DAEMON"); then
     patched=true
 fi
 

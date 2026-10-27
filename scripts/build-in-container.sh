@@ -109,8 +109,8 @@ build_file_restore() {
     local check_dir
     check_dir=$(mktemp -d)
     dpkg-deb -x "$OUTPUT_DIR/proxmox-backup-file-restore_${version}_amd64.deb" "$check_dir"
-    strings "$check_dir/usr/lib/x86_64-linux-gnu/proxmox-backup/file-restore/proxmox-restore-daemon" \
-        | grep -qF 'try FUSE mount using ntfs-3g'
+    grep -qF 'try FUSE mount using ntfs-3g' \
+        < <(strings "$check_dir/usr/lib/x86_64-linux-gnu/proxmox-backup/file-restore/proxmox-restore-daemon")
     rm -rf "$check_dir"
 }
 
@@ -142,8 +142,8 @@ build_restore_image() {
     check_dir=$(mktemp -d)
     dpkg-deb -x "$OUTPUT_DIR/proxmox-backup-restore-image_${version}_amd64.deb" "$check_dir"
     initramfs="$check_dir/usr/lib/x86_64-linux-gnu/proxmox-backup/file-restore/initramfs.img"
-    lsinitramfs "$initramfs" | grep -qx 'usr/bin/ntfs-3g'
-    lsinitramfs "$initramfs" | grep -qx 'usr/lib/x86_64-linux-gnu/ntfs-3g/ntfs-plugin-80000013.so'
+    grep -qx 'usr/bin/ntfs-3g' < <(lsinitramfs "$initramfs")
+    grep -qx 'usr/lib/x86_64-linux-gnu/ntfs-3g/ntfs-plugin-80000013.so' < <(lsinitramfs "$initramfs")
     rm -rf "$check_dir"
 }
 

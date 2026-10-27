@@ -209,10 +209,10 @@ jobs:
             dpkg-deb -I "$fr" | grep -q 'Provides: proxmox-backup-file-restore-ntfs3g'
             tmp=$(mktemp -d)
             dpkg-deb -x "$fr" "$tmp"
-            strings "$tmp/usr/lib/x86_64-linux-gnu/proxmox-backup/file-restore/proxmox-restore-daemon" \
-              | grep -qF 'try FUSE mount using ntfs-3g'
-            strings "$tmp/usr/lib/x86_64-linux-gnu/proxmox-backup/file-restore/proxmox-restore-daemon" \
-              | grep -qF 'remounting with ntfs-3g'
+            grep -qF 'try FUSE mount using ntfs-3g' \
+              < <(strings "$tmp/usr/lib/x86_64-linux-gnu/proxmox-backup/file-restore/proxmox-restore-daemon")
+            grep -qF 'remounting with ntfs-3g' \
+              < <(strings "$tmp/usr/lib/x86_64-linux-gnu/proxmox-backup/file-restore/proxmox-restore-daemon")
             rm -rf "$tmp"
           fi
 
@@ -222,9 +222,9 @@ jobs:
             tmp=$(mktemp -d)
             dpkg-deb -x "$ri" "$tmp"
             img="$tmp/usr/lib/x86_64-linux-gnu/proxmox-backup/file-restore/initramfs.img"
-            lsinitramfs "$img" | grep -qx 'usr/bin/ntfs-3g'
-            lsinitramfs "$img" | grep -qx 'usr/lib/x86_64-linux-gnu/ntfs-3g/ntfs-plugin-80000013.so'
-            lsinitramfs "$img" | grep -q 'libfuse3'
+            grep -qx 'usr/bin/ntfs-3g' < <(lsinitramfs "$img")
+            grep -qx 'usr/lib/x86_64-linux-gnu/ntfs-3g/ntfs-plugin-80000013.so' < <(lsinitramfs "$img")
+            grep -q 'libfuse3' < <(lsinitramfs "$img")
             rm -rf "$tmp"
           fi
 
