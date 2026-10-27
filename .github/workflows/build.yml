@@ -23,7 +23,9 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          fetch-depth: 2
+          # The push base can be several commits back; a shallow clone
+          # would make `git diff $base HEAD` fail and skip every build.
+          fetch-depth: 0
       - id: filter
         run: |
           set -euo pipefail
