@@ -47,7 +47,8 @@ jobs:
           echo "changed files:"; echo "$changed"
           comp() {
             local name=$1 lockfile=$2
-            if grep -q "^$name " <<<"$(git diff "$base" HEAD -- upstream.lock)" \
+            # diff lines are prefixed with +/- (e.g. when upstream.lock is new)
+            if git diff "$base" HEAD -- upstream.lock | grep -qE "^[+-]$name[[:space:]]" \
                 || grep -q "$lockfile" <<<"$changed"; then
               echo true
             else
@@ -57,7 +58,7 @@ jobs:
           echo "file-restore=$(comp file-restore patches/proxmox-backup-ntfs3g-fallback.patch)" >> "$GITHUB_OUTPUT"
           echo "restore-image=$(comp restore-image patches/proxmox-backup-restore-image-ntfs3g.patch)" >> "$GITHUB_OUTPUT"
           echo "dedup-plugin=$(comp dedup-plugin patches/ntfs-3g-dedup-plugin-fuse3.patch)" >> "$GITHUB_OUTPUT"
-          if grep -q '^meta ' <<<"$(git diff "$base" HEAD -- upstream.lock)" \
+          if git diff "$base" HEAD -- upstream.lock | grep -qE '^[+-]meta[[:space:]]' \
               || grep -q '^packaging/pve-file-restore-ntfs3g/' <<<"$changed"; then
             echo "meta=true" >> "$GITHUB_OUTPUT"
           else
