@@ -26,7 +26,11 @@ Every release contains exactly:
 
 - one `.deb`, named `<package>_<version>_amd64.deb` (package names:
   `proxmox-backup-file-restore`, `proxmox-backup-restore-image`,
-  `ntfs-3g-plugin-dedup`, `pve-file-restore-ntfs3g`);
+  `ntfs-3g-plugin-dedup`, `pve-file-restore-ntfs3g`). GitHub sanitizes asset
+  file names, so `~` becomes `.` in the **file name** (e.g.
+  `ntfs-3g-plugin-dedup_0.git20260721.885c77b-1_amd64.deb`); the package's
+  internal Debian version keeps the `~`. The attached `SHA256SUMS` always
+  matches the asset file names.
 - `SHA256SUMS` covering that `.deb`;
 - the build log;
 - release notes: the component's `CHANGELOG.md` section and the upstream

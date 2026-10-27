@@ -63,7 +63,9 @@ Both only change in a new entry of this file.
   digest-pinned `debian:13` container; the same script runs in CI.
 - Release tags are `<component>/<version>`; `~` in Debian versions is
   encoded as `_` in tags (git refs cannot contain `~`), so the dedup-plugin
-  release is tagged `dedup-plugin/0_git20260721.885c77b-1`. See
+  release is tagged `dedup-plugin/0_git20260721.885c77b-1`. In release
+  **asset file names**, `~` becomes `.` (GitHub sanitization); the
+  `SHA256SUMS` in each release matches the asset names. See
   `docs/releases.md`.
 - GitHub Actions: `upstream-watch.yml` watches new Proxmox versions and opens
   a PR per bump; `build.yml` builds and tests changed components;

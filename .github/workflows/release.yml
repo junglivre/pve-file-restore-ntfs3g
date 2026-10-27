@@ -73,7 +73,14 @@ jobs:
 
             work=$(mktemp -d)
             cp "$deb" "$work/"
-            (cd "$work" && sha256sum "$(basename "$deb")" > SHA256SUMS)
+            # GitHub sanitizes asset file names ('~' -> '.'), which would
+            # break sha256sum -c for consumers. Rename to the sanitized
+            # form up front so assets and SHA256SUMS always match.
+            for f in "$work"/*'~'*; do
+              [ -e "$f" ] || continue
+              mv "$f" "${f//'~'/'.'}"
+            done
+            (cd "$work" && sha256sum *.deb > SHA256SUMS)
             log=$(find "artifacts/$component" -name "build-${component}.log" 2>/dev/null | head -1 || true)
             [ -n "$log" ] && cp "$log" "$work/"
 
