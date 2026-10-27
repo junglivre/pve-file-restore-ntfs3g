@@ -5101,7 +5101,7 @@ index 37e1330d1..8269c7730 100644
  Description: Proxmox Backup single file restore tools for pxar and block device backups
   This package contains the Proxmox Backup single file restore client for
 diff --git a/proxmox-restore-daemon/src/proxmox_restore_daemon/disk.rs b/proxmox-restore-daemon/src/proxmox_restore_daemon/disk.rs
-index 751bc83fd..94de541a2 100644
+index 751bc83fd..e9c498b36 100644
 --- a/proxmox-restore-daemon/src/proxmox_restore_daemon/disk.rs
 +++ b/proxmox-restore-daemon/src/proxmox_restore_daemon/disk.rs
 @@ -334,6 +334,17 @@ impl Filesystems {
@@ -5136,7 +5136,7 @@ index 751bc83fd..94de541a2 100644
          bail!("all mounts failed or no supported file system")
      }
  
-@@ -356,6 +374,21 @@ impl Filesystems {
+@@ -356,6 +374,22 @@ impl Filesystems {
      }
  }
  
@@ -5152,7 +5152,8 @@ index 751bc83fd..94de541a2 100644
 +fn mount_ntfs3g(source: &str, target: &str) -> Result<(), Error> {
 +    let mut cmd = Command::new("/usr/bin/ntfs-3g");
 +    cmd.args(["-o", "ro", source, target].iter());
-+    run_command(cmd, None)
++    run_command(cmd, None)?;
++    Ok(())
 +}
 +
  pub struct DiskState {

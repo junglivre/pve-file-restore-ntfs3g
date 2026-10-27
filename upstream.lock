@@ -19,7 +19,7 @@
 #
 # Debian ordering guarantee: 4.2.8-1 < 4.2.8-1+ntfs3g1 < 4.2.8-2. No epoch.
 
-file-restore   4.2.8-1+ntfs3g1            78f77d53718b351bebacfa4f56f85134616e0b02  ntfs3g1  sha256:e0100744fc8f42b766004b75d2d48b0095f5648d9f2d245c4927eb5ca3f80d8c
-restore-image  1.0.0+ntfs3g2              c0b6cd89dab2cc4e02945b5e211d17fc9897a57a  ntfs3g2  sha256:7c84e34ecd43726563a0c9ea28df93a4e0e21dc5dc85cfb60cea08df531ccc46
+file-restore   4.2.8-1+ntfs3g1            78f77d53718b351bebacfa4f56f85134616e0b02  ntfs3g1  sha256:7b17293c729f96724807546c37cb42d613e512d8b97758a78b80b6bf8441701b
+restore-image  1.0.0+ntfs3g2              c0b6cd89dab2cc4e02945b5e211d17fc9897a57a  ntfs3g2  sha256:ec2991ee4d11681a1c3af5fa91e2cdf203eb0ea63330cba4a008ce68c1d9ae96
 dedup-plugin   0~git20260721.885c77b-1    885c77ba8b89a75976345dbd4f06d3c39fbd3e31  1        sha256:76140ba270ccc7cbbfb9796cec6377c4e31a15d45b8e7789cd03c98cb7d4b773
 meta           2.0.0                      -                                          -        -
