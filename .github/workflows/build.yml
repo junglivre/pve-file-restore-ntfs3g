@@ -250,6 +250,8 @@ jobs:
             bash -euxo pipefail -c '
               export DEBIAN_FRONTEND=noninteractive
               apt-get update -qq
+              # the file-restore postinst regenerates the cached initramfs
+              apt-get install -y --no-install-recommends cpio
               meta=$(find /artifacts/meta -name "pve-file-restore-ntfs3g_*.deb" | head -1)
               fr=$(find /artifacts/file-restore -name "proxmox-backup-file-restore_*.deb" | head -1)
               ri=$(find /artifacts/restore-image -name "proxmox-backup-restore-image_*.deb" | head -1)
