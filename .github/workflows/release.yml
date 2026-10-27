@@ -84,9 +84,10 @@ jobs:
               echo "Build log: attached. Verify with \`sha256sum -c SHA256SUMS\`."
             } > "$work/notes.md"
 
-            git tag "$tag" || true
-            git push origin "$tag"
-            gh release create "$tag" --prerelease \
+            # gh creates the tag via the API: a plain `git push` of a tag
+            # pointing at commits that touch .github/workflows is rejected
+            # for the GITHUB_TOKEN (missing `workflows` permission).
+            gh release create "$tag" --prerelease --target "${{ github.sha }}" \
               --title "$tag" --notes-file "$work/notes.md" "$work"/*
             published+=("$tag")
             rm -rf "$work"

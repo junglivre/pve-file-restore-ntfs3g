@@ -16,6 +16,8 @@ cd "$PROJECT_DIR"
 
 COMPONENT=${BUILD_COMPONENT:?BUILD_COMPONENT is required}
 
+mkdir -p "$WORK_DIR/src" "$WORK_DIR/pkg" "$OUTPUT_DIR"
+
 export DEBIAN_FRONTEND=noninteractive
 export DEB_BUILD_OPTIONS=nocheck
 
@@ -200,8 +202,6 @@ build_meta() {
     dpkg-deb --root-owner-group --build "$staging" \
         "$OUTPUT_DIR/pve-file-restore-ntfs3g_${version}_amd64.deb"
 }
-
-mkdir -p $WORK_DIR/src $WORK_DIR/pkg $OUTPUT_DIR
 
 case $COMPONENT in
     file-restore) build_file_restore ;;

@@ -90,7 +90,9 @@ jobs:
           PROJECT_DIR: ${{ github.workspace }}
           WORK_DIR: ${{ github.workspace }}/.build
           OUTPUT_DIR: ${{ github.workspace }}/dist
-        run: bash scripts/build-in-container.sh 2>&1 | tee build-file-restore.log
+        run: |
+          set -euo pipefail
+          bash scripts/build-in-container.sh 2>&1 | tee build-file-restore.log
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: file-restore
@@ -98,6 +100,7 @@ jobs:
             dist/*.deb
             dist/SHA256SUMS
             build-file-restore.log
+          if-no-files-found: error
           retention-days: 30
 
   build-restore-image:
@@ -122,7 +125,9 @@ jobs:
           sudo systemctl restart docker
           df -h /mnt
       - name: Build proxmox-backup-restore-image
-        run: ./scripts/build.sh --component restore-image 2>&1 | tee build-restore-image.log
+        run: |
+          set -euo pipefail
+          ./scripts/build.sh --component restore-image 2>&1 | tee build-restore-image.log
       - name: Disk usage after build
         run: df -h
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -132,6 +137,7 @@ jobs:
             /mnt/dist/*.deb
             /mnt/dist/SHA256SUMS
             build-restore-image.log
+          if-no-files-found: error
           retention-days: 30
 
   build-dedup-plugin:
@@ -141,7 +147,9 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Build ntfs-3g-plugin-dedup
-        run: ./scripts/build.sh --component dedup-plugin 2>&1 | tee build-dedup-plugin.log
+        run: |
+          set -euo pipefail
+          ./scripts/build.sh --component dedup-plugin 2>&1 | tee build-dedup-plugin.log
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: dedup-plugin
@@ -149,6 +157,7 @@ jobs:
             dist/*.deb
             dist/SHA256SUMS
             build-dedup-plugin.log
+          if-no-files-found: error
           retention-days: 30
 
   build-meta:
@@ -158,7 +167,9 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Build pve-file-restore-ntfs3g metapackage
-        run: ./scripts/build.sh --component meta 2>&1 | tee build-meta.log
+        run: |
+          set -euo pipefail
+          ./scripts/build.sh --component meta 2>&1 | tee build-meta.log
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: meta
@@ -166,11 +177,17 @@ jobs:
             dist/*.deb
             dist/SHA256SUMS
             build-meta.log
+          if-no-files-found: error
           retention-days: 30
 
   test:
     needs: [changes, build-file-restore, build-restore-image, build-dedup-plugin, build-meta]
-    if: always() && !cancelled() && !contains(needs.*.result, 'failure')
+    if: >-
+      always() && !cancelled() && !contains(needs.*.result, 'failure') &&
+      (needs.changes.outputs.file-restore == 'true' ||
+       needs.changes.outputs.restore-image == 'true' ||
+       needs.changes.outputs.dedup-plugin == 'true' ||
+       needs.changes.outputs.meta == 'true')
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
