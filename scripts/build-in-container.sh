@@ -28,7 +28,8 @@ DEDUP_PLUGIN_REPOSITORY='https://github.com/smx-smx/ntfs-3g-dedup-plugin.git'
 apt-get update
 apt-get install -y --no-install-recommends \
     ca-certificates curl git build-essential devscripts equivs lintian \
-    autoconf automake libtool pkg-config ntfs-3g-dev libfuse3-dev python3-sphinx
+    autoconf automake libtool pkg-config ntfs-3g-dev libfuse3-dev python3-sphinx \
+    initramfs-tools-core
 
 curl -fsSL https://enterprise.proxmox.com/debian/proxmox-release-trixie.gpg \
     -o /usr/share/keyrings/proxmox-release-trixie.gpg
