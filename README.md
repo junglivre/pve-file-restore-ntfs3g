@@ -1,101 +1,109 @@
 # Proxmox VE File Restore: NTFS-3G fallback
 
-Enable reliable, read-only File Restore access to NTFS volumes when the in-kernel `ntfs3` driver cannot mount them. The restore image also includes an `ntfs-3g` plugin for Windows Server Data Deduplication reparse points (`0x80000013`, including format `0x0103`).
+Reliable, read-only Proxmox File Restore access to NTFS volumes that the
+in-kernel `ntfs3` driver cannot handle — including Windows Server Data
+Deduplication volumes (reparse point `0x80000013`, format `0x0103`), via an
+`ntfs-3g` plugin.
 
 Portuguese documentation: [README.pt-BR.md](README.pt-BR.md).
 
 > [!WARNING]
-> This is an unofficial, custom build. It changes Proxmox File Restore packages, not the running host kernel. Test it in your environment and keep the supplied rollback packages. The deduplication plugin is a third-party GPL-2 component, not a Proxmox-supported feature.
-
-## Tested target
-
-The included release assets were built and tested on:
-
-| Component | Version |
-| --- | --- |
-| Proxmox VE Manager | `9.2.11` |
-| Debian base | 13 (Trixie), `amd64` |
-| `proxmox-backup-file-restore` base | `4.2.5-1` |
-| `proxmox-backup-restore-image` base | `1.0.0` |
-| Custom package version | `+ntfs3g1` |
-
-The functional test used the PVE File Restore API to browse an NTFS partition of approximately 4 TB from a PBS backup while the source VM remained online.
+> Unofficial custom build. It changes the Proxmox File Restore packages, not
+> the running host kernel. Test in your environment before production. The
+> dedup plugin is a third-party GPL-2.0-only component, not a
+> Proxmox-supported feature.
 
 ## What changes
 
-1. `proxmox-backup-file-restore` tries `/usr/bin/ntfs-3g -o ro` after all in-kernel filesystem mount attempts fail.
-2. `proxmox-backup-restore-image` enables built-in FUSE and bundles `ntfs-3g`, `libfuse3`, and `libntfs-3g` in the File Restore initramfs.
-3. The initramfs bundles `ntfs-plugin-80000013.so` in the path where `ntfs-3g` automatically loads it.
+1. `proxmox-backup-file-restore` falls back to `ntfs-3g -o ro` after all
+   in-kernel mounts fail, and **remounts with `ntfs-3g` whenever `ntfs3`
+   mounts a deduplicated volume** (detected by
+   `System Volume Information/Dedup`): `ntfs3` cannot read dedup reparse
+   points, so deduplicated files would otherwise be served with wrong
+   content. Volumes without dedup stay on the faster `ntfs3`.
+2. `proxmox-backup-restore-image` enables FUSE in the restore kernel and
+   bundles `ntfs-3g`, `libfuse3` and the `ntfs-plugin-80000013.so` dedup
+   plugin in the File Restore initramfs.
+3. The `pve-file-restore-ntfs3g` metapackage depends on the virtual packages
+   `proxmox-backup-file-restore-ntfs3g` and
+   `proxmox-backup-restore-image-ntfs3g`, which only the patched builds
+   provide — an official package can never satisfy it.
 
-The fallback is intentionally read-only. It does not alter backup contents or guest disks.
+All NTFS access happens read-only, inside the restore microVM; the host
+kernel and the backups are never touched.
 
-## Install the prebuilt release
+## Install
 
-Download the two `.deb` files and `SHA256SUMS` from the matching GitHub release, verify their checksums, then install them together:
+Releases are published on GitHub: pre-release = `testing`, release =
+`stable` (see [docs/releases.md](docs/releases.md)).
+
+- **Cluster / standalone:** see [docs/standalone.md](docs/standalone.md) —
+  one command installs on every node:
+
+  ```bash
+  ./scripts/cluster-install.sh --hold
+  ```
+
+  The `--hold` matters: without a repository or pin, an `apt upgrade`
+  replaces the patched packages with the official ones.
+- **MasterMind clients:** the packages are also published in the public
+  MasterMind APT repository (`https://apt.mastermindti.cloud/debian`), which
+  mirrors these releases — install from there, not with the script above.
+
+## Verify
 
 ```bash
-sha256sum -c SHA256SUMS
-apt-get install ./proxmox-backup-file-restore_4.2.5-1+ntfs3g1_amd64.deb \
-  ./proxmox-backup-restore-image_1.0.0+ntfs3g1_amd64.deb
+pve-file-restore-ntfs3g-check          # human-readable, ✔/✘
+pve-file-restore-ntfs3g-check --json   # machine-readable
 ```
 
-No host reboot or guest shutdown is required. A new File Restore session uses the updated image.
+## Versioning
 
-Before installing, download the original packages for rollback:
+Packages are versioned `<exact upstream version>+ntfs3g<N>` and always built
+from the upstream release commit (`bump version to <version>`, recorded in
+[`upstream.lock`](upstream.lock)) — never from a `master` tip. Debian
+ordering: `4.2.8-1 < 4.2.8-1+ntfs3g1 < 4.2.8-2`. See
+[CHANGELOG.md](CHANGELOG.md).
 
-```bash
-mkdir -p rollback && cd rollback
-apt-get download proxmox-backup-file-restore=4.2.5-1 \
-  proxmox-backup-restore-image=1.0.0
-```
-
-### Verify the installed result
+## Roll back to the official packages
 
 ```bash
-dpkg-query -W proxmox-backup-file-restore proxmox-backup-restore-image
-
-strings /usr/lib/x86_64-linux-gnu/proxmox-backup/file-restore/proxmox-restore-daemon \
-  | grep -F 'try FUSE mount using ntfs-3g'
-
-lsinitramfs /usr/lib/x86_64-linux-gnu/proxmox-backup/file-restore/initramfs.img \
-  | grep -E 'ntfs-3g|ntfs-plugin-80000013|libfuse3'
-```
-
-### Roll back
-
-From the directory containing the original packages:
-
-```bash
-apt-get install ./proxmox-backup-file-restore_4.2.5-1_amd64.deb \
-  ./proxmox-backup-restore-image_1.0.0_amd64.deb
+apt-mark unhold proxmox-backup-file-restore proxmox-backup-restore-image
+apt-get install --allow-downgrades \
+  proxmox-backup-file-restore=<official version> \
+  proxmox-backup-restore-image=<official version>
 ```
 
 ## Build it yourself
 
-The builder uses a disposable Debian 13 Docker container; it does not install build dependencies on the PVE node.
-
-Requirements: Docker, an internet connection, approximately 35 GB of free disk space, and several CPU-hours for the custom restore kernel and ZFS tools.
+Requirements: Docker, internet, ~35 GB of free disk and several CPU-hours
+for the restore-image component (custom kernel + ZFS tools).
 
 ```bash
-git clone https://github.com/junglivre/pve-file-restore-ntfs3g.git
-cd pve-file-restore-ntfs3g
-./scripts/build.sh
+./scripts/build.sh --component all        # or: file-restore | restore-image |
+                                          #     dedup-plugin | meta
 ```
 
-Packages and checksums are placed in `dist/`. The builder pins the upstream source commits listed in [`scripts/versions.sh`](scripts/versions.sh) and validates that the resulting initramfs includes all required NTFS/FUSE components.
+Packages and `SHA256SUMS` land in `dist/`. The build pins everything through
+`upstream.lock` (exact commits + patch hashes), uses a digest-pinned
+`debian:13` container, and is exactly what CI runs
+([docs/automation.md](docs/automation.md)).
 
-## Release assets in this repository
+## Automation
 
-`dist/` contains the release built for the tested target. GitHub releases should attach the same two packages and `SHA256SUMS`.
+A daily GitHub Actions watch notices new Proxmox versions, checks that the
+patches still apply and opens a bump PR; merging publishes a pre-release
+automatically. Promotion to `stable` is manual and approval-gated. Details:
+[docs/automation.md](docs/automation.md).
 
 ## Upstream and licensing
 
-- The fallback follows the upstream Proxmox patch series: [PBS development list](https://lore.proxmox.com/pbs-devel/20260514152510.2273112-1-c.ebner@proxmox.com/T/).
-- The original issue is [Proxmox Bugzilla #7544](https://bugzilla.proxmox.com/show_bug.cgi?id=7544).
-- The deduplication plugin source is [smx-smx/ntfs-3g-dedup-plugin](https://github.com/smx-smx/ntfs-3g-dedup-plugin), GPL-2.0-only.
+- Fallback follows the upstream patch series:
+  [pbs-devel](https://lore.proxmox.com/pbs-devel/20260514152510.2273112-1-c.ebner@proxmox.com/T/);
+  original issue: [Bugzilla #7544](https://bugzilla.proxmox.com/show_bug.cgi?id=7544).
+- Dedup plugin: [smx-smx/ntfs-3g-dedup-plugin](https://github.com/smx-smx/ntfs-3g-dedup-plugin),
+  GPL-2.0-only, with a FUSE 3 patch.
 
-See [LICENSES.md](LICENSES.md) for component attribution. Proxmox and Debian packages retain their respective upstream licenses.
-
-## Maintenance
-
-This build is deliberately version-specific. A future Proxmox package update can replace these custom packages. Rebuild against new base versions, inspect the package diffs, and retest File Restore before deploying an update.
+See [LICENSES.md](LICENSES.md). Proxmox and Debian packages retain their
+upstream licenses. No endorsement by Proxmox Server Solutions GmbH, Tuxera
+or the plugin author is claimed.

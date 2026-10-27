@@ -1,0 +1,18 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: ntfs-3g-dedup-plugin
+Upstream-Contact: smx-smx <https://github.com/smx-smx>
+Source: https://github.com/smx-smx/ntfs-3g-dedup-plugin
+
+Files: *
+Copyright: smx-smx and contributors
+License: GPL-2.0-only
+ This program is free software; you can redistribute it and/or modify it
+ under the terms of the GNU General Public License version 2 as published
+ by the Free Software Foundation.
+ .
+ On Debian systems, the full text of the GNU General Public License version
+ 2 can be found in /usr/share/common-licenses/GPL-2.
+ .
+ This package applies a patch (patches/ntfs-3g-dedup-plugin-fuse3.patch in
+ https://github.com/junglivre/pve-file-restore-ntfs3g) that ports the plugin
+ to FUSE 3 and drops the optional .NET hosting path.

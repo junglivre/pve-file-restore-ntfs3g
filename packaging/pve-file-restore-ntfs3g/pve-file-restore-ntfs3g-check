@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# Verify that the ntfs-3g File Restore patch is active on this node.
+#
+#   pve-file-restore-ntfs3g-check           human-readable report
+#   pve-file-restore-ntfs3g-check --json    machine-readable report
+#
+# Exit status is 0 when every check passes, 1 otherwise.
+#
+# The --json output is a stable contract (consumers: mm-pve-tools). It only
+# changes with a new version of this package and a CHANGELOG.md entry:
+#
+#   {"ok": true,
+#    "file_restore":  {"version": "4.2.8-1+ntfs3g1", "patched": true},
+#    "restore_image": {"version": "1.0.0+ntfs3g2", "ntfs3g": true,
+#                      "dedup_plugin": true},
+#    "initramfs_cache_fresh": true}
+set -Eeuo pipefail
+
+JSON=0
+[ "${1:-}" = '--json' ] && JSON=1
+
+DAEMON='/usr/lib/x86_64-linux-gnu/proxmox-backup/file-restore/proxmox-restore-daemon'
+IMAGE_INITRAMFS='/usr/lib/x86_64-linux-gnu/proxmox-backup/file-restore/initramfs.img'
+CACHE_INITRAMFS='/var/cache/proxmox-backup/file-restore-initramfs.img'
+
+pkg_version() {
+    dpkg-query -W -f '${Version}' "$1" 2>/dev/null || true
+}
+
+file_restore_version=$(pkg_version proxmox-backup-file-restore)
+restore_image_version=$(pkg_version proxmox-backup-restore-image)
+
+patched=false
+if [ -n "$file_restore_version" ] && [ -r "$DAEMON" ] \
+    && strings "$DAEMON" | grep -qF 'try FUSE mount using ntfs-3g'; then
+    patched=true
+fi
+
+ntfs3g=false
+dedup_plugin=false
+if [ -n "$restore_image_version" ] && [ -r "$IMAGE_INITRAMFS" ]; then
+    listing=$(lsinitramfs "$IMAGE_INITRAMFS" 2>/dev/null || true)
+    grep -qx 'usr/bin/ntfs-3g' <<<"$listing" && ntfs3g=true
+    grep -qx 'usr/lib/x86_64-linux-gnu/ntfs-3g/ntfs-plugin-80000013.so' <<<"$listing" \
+        && dedup_plugin=true
+fi
+
+# The postinst of proxmox-backup-file-restore regenerates the cached
+# file-restore initramfs. If the cache is older than the shipped image, the
+# regeneration has not happened (or failed) and restores still use a stale
+# initramfs.
+initramfs_cache_fresh=false
+if [ -r "$CACHE_INITRAMFS" ] && [ -r "$IMAGE_INITRAMFS" ] \
+    && [ "$CACHE_INITRAMFS" -nt "$IMAGE_INITRAMFS" ]; then
+    initramfs_cache_fresh=true
+fi
+
+ok=false
+if $patched && $ntfs3g && $dedup_plugin && $initramfs_cache_fresh; then
+    ok=true
+fi
+
+mark() { $1 && printf '\xe2\x9c\x94' || printf '\xe2\x9c\x98'; }
+
+if [ "$JSON" -eq 1 ]; then
+    printf '{"ok": %s, "file_restore": {"version": "%s", "patched": %s}, "restore_image": {"version": "%s", "ntfs3g": %s, "dedup_plugin": %s}, "initramfs_cache_fresh": %s}\n' \
+        "$ok" \
+        "${file_restore_version:-null}" "$patched" \
+        "${restore_image_version:-null}" "$ntfs3g" "$dedup_plugin" \
+        "$initramfs_cache_fresh"
+else
+    echo "pve-file-restore-ntfs3g status:"
+    printf '  %s proxmox-backup-file-restore  %s  (daemon with ntfs-3g fallback)\n' \
+        "$(mark $patched)" "${file_restore_version:-not installed}"
+    printf '  %s proxmox-backup-restore-image %s  (ntfs-3g in initramfs)\n' \
+        "$(mark $ntfs3g)" "${restore_image_version:-not installed}"
+    printf '  %s dedup plugin ntfs-plugin-80000013.so in initramfs\n' \
+        "$(mark $dedup_plugin)"
+    printf '  %s cached file-restore initramfs is fresh\n' \
+        "$(mark $initramfs_cache_fresh)"
+    $ok || echo "Some checks failed; see docs/standalone.md." >&2
+fi
+
+$ok

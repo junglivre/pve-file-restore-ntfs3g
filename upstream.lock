@@ -1,0 +1,25 @@
+# Single source of truth for what this repository builds.
+#
+# One line per component (fields separated by whitespace):
+#
+#   <component>  <package version>  <upstream commit>  <patch revision>  <patches sha256>
+#
+# - package version: exact upstream version + our "+ntfs3g<N>" suffix (D6), or
+#   the package's own version for dedup-plugin and meta.
+# - upstream commit: full commit hash of the upstream release commit. For
+#   proxmox-backup and proxmox-backup-restore-image this MUST be the commit
+#   titled "bump version to <upstream version>" (find it with
+#   scripts/resolve-upstream.sh); never a master tip. For dedup-plugin it is
+#   the pinned commit of smx-smx/ntfs-3g-dedup-plugin.
+# - patch revision: our patch revision on that upstream version. It goes up
+#   when our patch changes and resets to ntfs3g1 on every new upstream
+#   version. For dedup-plugin and meta it is the Debian revision.
+# - patches sha256: sha256 of the patch file(s) applied to that component
+#   ("-" when there are none). CI keys its build caches on this.
+#
+# Debian ordering guarantee: 4.2.8-1 < 4.2.8-1+ntfs3g1 < 4.2.8-2. No epoch.
+
+file-restore   4.2.8-1+ntfs3g1            78f77d53718b351bebacfa4f56f85134616e0b02  ntfs3g1  sha256:e0100744fc8f42b766004b75d2d48b0095f5648d9f2d245c4927eb5ca3f80d8c
+restore-image  1.0.0+ntfs3g2              c0b6cd89dab2cc4e02945b5e211d17fc9897a57a  ntfs3g2  sha256:7c84e34ecd43726563a0c9ea28df93a4e0e21dc5dc85cfb60cea08df531ccc46
+dedup-plugin   0~git20260721.885c77b-1    885c77ba8b89a75976345dbd4f06d3c39fbd3e31  1        sha256:76140ba270ccc7cbbfb9796cec6377c4e31a15d45b8e7789cd03c98cb7d4b773
+meta           2.0.0                      -                                          -        -

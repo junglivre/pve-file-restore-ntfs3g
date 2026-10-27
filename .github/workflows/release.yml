@@ -1,0 +1,102 @@
+name: release
+
+# A change to upstream.lock on master means a component got a new version:
+# build everything (build.yml) and publish a pre-release (= testing channel)
+# per component, tagged <component>/<version>. Promotion to stable is a
+# separate, approval-gated workflow (promote.yml).
+on:
+  push:
+    branches: [master]
+    paths: [upstream.lock]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    uses: ./.github/workflows/build.yml
+    permissions:
+      contents: read
+
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      issues: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Download build artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: artifacts
+      - name: Publish pre-releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # shellcheck source=lib-lock.sh
+          source scripts/lib-lock.sh
+
+          changelog_section() {
+            local tag=$1
+            awk -v tag="### $tag" '
+              $0 == tag { capture = 1; next }
+              capture && /^(###|##) / { exit }
+              capture { print }
+            ' CHANGELOG.md
+          }
+
+          declare -A DEB_OF=(
+            [file-restore]=proxmox-backup-file-restore
+            [restore-image]=proxmox-backup-restore-image
+            [dedup-plugin]=ntfs-3g-plugin-dedup
+            [meta]=pve-file-restore-ntfs3g
+          )
+
+          published=()
+          for component in file-restore restore-image dedup-plugin meta; do
+            deb=$(find "artifacts/$component" -name "${DEB_OF[$component]}_*.deb" 2>/dev/null | head -1 || true)
+            [ -n "$deb" ] || { echo ":: $component: no build artifact, skipping"; continue; }
+
+            version=$(lock_field "$component" version)
+            commit=$(lock_field "$component" commit)
+            # git refs cannot contain '~' (DEP-14 style encoding), e.g.
+            # dedup-plugin/0~git20260721.885c77b-1 -> dedup-plugin/0_git20260721.885c77b-1
+            tag="$component/${version//'~'/'_'}"
+
+            if gh release view "$tag" >/dev/null 2>&1; then
+              echo ":: $tag already exists, skipping (releases are immutable; a fix is a new version)"
+              continue
+            fi
+
+            work=$(mktemp -d)
+            cp "$deb" "$work/"
+            (cd "$work" && sha256sum "$(basename "$deb")" > SHA256SUMS)
+            log=$(find "artifacts/$component" -name "build-${component}.log" 2>/dev/null | head -1 || true)
+            [ -n "$log" ] && cp "$log" "$work/"
+
+            {
+              changelog_section "$tag"
+              echo
+              echo "Upstream commit: \`$commit\`"
+              echo "Build log: attached. Verify with \`sha256sum -c SHA256SUMS\`."
+            } > "$work/notes.md"
+
+            git tag "$tag" || true
+            git push origin "$tag"
+            gh release create "$tag" --prerelease \
+              --title "$tag" --notes-file "$work/notes.md" "$work"/*
+            published+=("$tag")
+            rm -rf "$work"
+          done
+
+          if [ "${#published[@]}" -gt 0 ]; then
+            tags_csv=$(printf '%s, ' "${published[@]}" | sed 's/, $//')
+            body=$(printf 'Pre-releases (testing channel): %s.\n\nTest them on the lab cluster (`scripts/cluster-install.sh --channel testing`), then promote each tag to stable with the promote workflow (requires approval).' "$tags_csv")
+            gh issue create \
+              --title "pre-release published: ${published[*]}" \
+              --body "$body" \
+              || true
+          fi

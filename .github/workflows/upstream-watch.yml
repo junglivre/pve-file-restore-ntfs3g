@@ -1,0 +1,55 @@
+name: upstream-watch
+
+# Daily: compare upstream versions with upstream.lock and open a bump PR
+# (label upstream-bump) or an issue when human review is needed.
+#
+# PRs are created with BOT_TOKEN (a fine-grained PAT or GitHub App token
+# restricted to this repository): PRs created by GITHUB_TOKEN would not
+# trigger the CI workflow.
+on:
+  schedule:
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  watch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Watch upstream and prepare bump PRs
+        env:
+          GH_TOKEN: ${{ secrets.BOT_TOKEN || github.token }}
+          PUSH: '1'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends dpkg-dev zstd curl
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          ./scripts/upstream-watch.sh
+      - name: Keep the schedule alive
+        # Scheduled workflows in public repositories are disabled after 60
+        # days without activity. If the last commit is older than 45 days,
+        # record this run in status/last-check and commit it.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          last=$(git log -1 --format=%ct)
+          now=$(date +%s)
+          age_days=$(( (now - last) / 86400 ))
+          echo "last commit is $age_days days old"
+          if [ "$age_days" -gt 45 ]; then
+            mkdir -p status
+            date -u +%Y-%m-%dT%H:%M:%SZ > status/last-check
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add status/last-check
+            git commit -m "status: keep upstream-watch schedule alive"
+            git push
+          fi

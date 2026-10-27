@@ -1,0 +1,290 @@
+name: build
+
+# Builds (and tests) exactly the components that changed in upstream.lock,
+# patches/ or packaging/. Also called by release.yml.
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      file-restore: ${{ steps.filter.outputs.file-restore }}
+      restore-image: ${{ steps.filter.outputs.restore-image }}
+      dedup-plugin: ${{ steps.filter.outputs.dedup-plugin }}
+      meta: ${{ steps.filter.outputs.meta }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 2
+      - id: filter
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = pull_request ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+          else
+            base="${{ github.event.before }}"
+          fi
+          # A workflow_dispatch / workflow_call without a meaningful base
+          # builds everything.
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ] \
+              || [ "${{ github.event_name }}" = workflow_dispatch ] \
+              || [ "${{ github.event_name }}" = workflow_call ]; then
+            echo "file-restore=true"  >> "$GITHUB_OUTPUT"
+            echo "restore-image=true" >> "$GITHUB_OUTPUT"
+            echo "dedup-plugin=true"  >> "$GITHUB_OUTPUT"
+            echo "meta=true"          >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          changed=$(git diff --name-only "$base" HEAD -- upstream.lock patches/ packaging/ || true)
+          echo "changed files:"; echo "$changed"
+          comp() {
+            local name=$1 lockfile=$2
+            if grep -q "^$name " <<<"$(git diff "$base" HEAD -- upstream.lock)" \
+                || grep -q "$lockfile" <<<"$changed"; then
+              echo true
+            else
+              echo false
+            fi
+          }
+          echo "file-restore=$(comp file-restore patches/proxmox-backup-ntfs3g-fallback.patch)" >> "$GITHUB_OUTPUT"
+          echo "restore-image=$(comp restore-image patches/proxmox-backup-restore-image-ntfs3g.patch)" >> "$GITHUB_OUTPUT"
+          echo "dedup-plugin=$(comp dedup-plugin patches/ntfs-3g-dedup-plugin-fuse3.patch)" >> "$GITHUB_OUTPUT"
+          if grep -q '^meta ' <<<"$(git diff "$base" HEAD -- upstream.lock)" \
+              || grep -q '^packaging/pve-file-restore-ntfs3g/' <<<"$changed"; then
+            echo "meta=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "meta=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-file-restore:
+    needs: changes
+    if: needs.changes.outputs.file-restore == 'true'
+    runs-on: ubuntu-24.04
+    container:
+      image: debian:13@sha256:4c25275446ca371766b8b093c696782eabce06263fccacb8d5d813b3dc44b308
+    steps:
+      # git must exist inside the container before actions/checkout can run.
+      - name: Install git (needed by checkout inside the container)
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git ca-certificates
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Cache cargo build
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .build
+          key: file-restore-${{ hashFiles('upstream.lock', 'patches/proxmox-backup-ntfs3g-fallback.patch') }}
+          restore-keys: file-restore-
+      - name: Build proxmox-backup-file-restore
+        env:
+          BUILD_COMPONENT: file-restore
+          PROJECT_DIR: ${{ github.workspace }}
+          WORK_DIR: ${{ github.workspace }}/.build
+          OUTPUT_DIR: ${{ github.workspace }}/dist
+        run: bash scripts/build-in-container.sh 2>&1 | tee build-file-restore.log
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: file-restore
+          path: |
+            dist/*.deb
+            dist/SHA256SUMS
+            build-file-restore.log
+          retention-days: 30
+
+  build-restore-image:
+    needs: changes
+    if: needs.changes.outputs.restore-image == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Free disk space
+        run: |
+          df -h
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache
+          df -h
+      - name: Use /mnt for work and docker data
+        run: |
+          sudo mkdir -p /mnt/work /mnt/docker-data /mnt/dist
+          sudo chown -R "$USER:$USER" /mnt/work /mnt/dist
+          echo 'WORK_DIR=/mnt/work' >> "$GITHUB_ENV"
+          echo 'OUTPUT_DIR=/mnt/dist' >> "$GITHUB_ENV"
+          sudo sh -c 'printf "{\"data-root\": \"/mnt/docker-data\"}" > /etc/docker/daemon.json'
+          sudo systemctl restart docker
+          df -h /mnt
+      - name: Build proxmox-backup-restore-image
+        run: ./scripts/build.sh --component restore-image 2>&1 | tee build-restore-image.log
+      - name: Disk usage after build
+        run: df -h
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: restore-image
+          path: |
+            /mnt/dist/*.deb
+            /mnt/dist/SHA256SUMS
+            build-restore-image.log
+          retention-days: 30
+
+  build-dedup-plugin:
+    needs: changes
+    if: needs.changes.outputs.dedup-plugin == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Build ntfs-3g-plugin-dedup
+        run: ./scripts/build.sh --component dedup-plugin 2>&1 | tee build-dedup-plugin.log
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dedup-plugin
+          path: |
+            dist/*.deb
+            dist/SHA256SUMS
+            build-dedup-plugin.log
+          retention-days: 30
+
+  build-meta:
+    needs: changes
+    if: needs.changes.outputs.meta == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Build pve-file-restore-ntfs3g metapackage
+        run: ./scripts/build.sh --component meta 2>&1 | tee build-meta.log
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: meta
+          path: |
+            dist/*.deb
+            dist/SHA256SUMS
+            build-meta.log
+          retention-days: 30
+
+  test:
+    needs: [changes, build-file-restore, build-restore-image, build-dedup-plugin, build-meta]
+    if: always() && !cancelled() && !contains(needs.*.result, 'failure')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Download artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: artifacts
+      - name: Static checks (daemon, initramfs, Provides)
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends binutils initramfs-tools-core
+
+          fr=$(find artifacts/file-restore -name 'proxmox-backup-file-restore_*.deb' 2>/dev/null | head -1 || true)
+          ri=$(find artifacts/restore-image -name 'proxmox-backup-restore-image_*.deb' 2>/dev/null | head -1 || true)
+
+          if [ -n "$fr" ]; then
+            echo "== file-restore checks: $fr"
+            dpkg-deb -I "$fr" | grep -q 'Provides: proxmox-backup-file-restore-ntfs3g'
+            tmp=$(mktemp -d)
+            dpkg-deb -x "$fr" "$tmp"
+            strings "$tmp/usr/lib/x86_64-linux-gnu/proxmox-backup/file-restore/proxmox-restore-daemon" \
+              | grep -qF 'try FUSE mount using ntfs-3g'
+            strings "$tmp/usr/lib/x86_64-linux-gnu/proxmox-backup/file-restore/proxmox-restore-daemon" \
+              | grep -qF 'remounting with ntfs-3g'
+            rm -rf "$tmp"
+          fi
+
+          if [ -n "$ri" ]; then
+            echo "== restore-image checks: $ri"
+            dpkg-deb -I "$ri" | grep -q 'Provides: proxmox-backup-restore-image-ntfs3g'
+            tmp=$(mktemp -d)
+            dpkg-deb -x "$ri" "$tmp"
+            img="$tmp/usr/lib/x86_64-linux-gnu/proxmox-backup/file-restore/initramfs.img"
+            lsinitramfs "$img" | grep -qx 'usr/bin/ntfs-3g'
+            lsinitramfs "$img" | grep -qx 'usr/lib/x86_64-linux-gnu/ntfs-3g/ntfs-plugin-80000013.so'
+            lsinitramfs "$img" | grep -q 'libfuse3'
+            rm -rf "$tmp"
+          fi
+
+          meta=$(find artifacts/meta -name 'pve-file-restore-ntfs3g_*.deb' 2>/dev/null | head -1 || true)
+          if [ -n "$meta" ]; then
+            echo "== meta checks: $meta"
+            dpkg-deb -I "$meta" | grep -q 'Depends: proxmox-backup-file-restore-ntfs3g'
+            dpkg-deb -I "$meta" | grep -q 'proxmox-backup-restore-image-ntfs3g'
+          fi
+      - name: Metapackage dependency test
+        run: |
+          set -euo pipefail
+          meta=$(find artifacts/meta -name 'pve-file-restore-ntfs3g_*.deb' | head -1)
+          [ -n "$meta" ] || { echo "meta package not built in this run, skipping"; exit 0; }
+          fr=$(find artifacts/file-restore -name 'proxmox-backup-file-restore_*.deb' | head -1)
+          ri=$(find artifacts/restore-image -name 'proxmox-backup-restore-image_*.deb' | head -1)
+          [ -n "$fr" ] && [ -n "$ri" ] || { echo "patched packages not in this run, skipping"; exit 0; }
+
+          docker run --rm -v "$PWD/artifacts:/artifacts:ro" \
+            debian:13@sha256:4c25275446ca371766b8b093c696782eabce06263fccacb8d5d813b3dc44b308 \
+            bash -euxo pipefail -c '
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update -qq
+              meta=$(find /artifacts/meta -name "pve-file-restore-ntfs3g_*.deb" | head -1)
+              fr=$(find /artifacts/file-restore -name "proxmox-backup-file-restore_*.deb" | head -1)
+              ri=$(find /artifacts/restore-image -name "proxmox-backup-restore-image_*.deb" | head -1)
+              # Installing the metapackage alone MUST fail: the official
+              # packages do not provide the virtual ntfs3g names.
+              if apt-get install -y "$meta"; then
+                echo "metapackage installed without the patched packages: FAIL" >&2
+                exit 1
+              fi
+              # With the patched packages it MUST succeed.
+              apt-get install -y "$fr" "$ri" "$meta"
+            '
+      - name: Dedup plugin fixture test
+        run: |
+          set -euo pipefail
+          deb=$(find artifacts/dedup-plugin -name 'ntfs-3g-plugin-dedup_*.deb' 2>/dev/null | head -1 || true)
+          [ -n "$deb" ] || { echo "plugin not built in this run, skipping"; exit 0; }
+          if [ ! -f tests/fixtures/ntfs-dedup.img.zst ]; then
+            echo "::warning::tests/fixtures/ntfs-dedup.img.zst not present (see tests/README.md); skipping fixture test"
+            exit 0
+          fi
+          docker run --rm --device /dev/fuse --cap-add SYS_ADMIN \
+            -v "$PWD:/repo:ro" \
+            debian:13@sha256:4c25275446ca371766b8b093c696782eabce06263fccacb8d5d813b3dc44b308 \
+            bash -euxo pipefail -c '
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update -qq
+              apt-get install -y --no-install-recommends ntfs-3g zstd
+              deb=$(find /repo/artifacts/dedup-plugin -name "ntfs-3g-plugin-dedup_*.deb" | head -1)
+              dpkg -i "$deb"
+              zstd -d /repo/tests/fixtures/ntfs-dedup.img.zst -o /tmp/ntfs-dedup.img
+              mkdir -p /mnt/dedup
+              ntfs-3g -o ro /tmp/ntfs-dedup.img /mnt/dedup
+              cd /mnt/dedup
+              sha256sum -c /repo/tests/fixtures/ntfs-dedup.sha256
+            '
+      - name: Boot smoke test (QEMU)
+        run: |
+          set -euo pipefail
+          ri=$(find artifacts/restore-image -name 'proxmox-backup-restore-image_*.deb' 2>/dev/null | head -1 || true)
+          [ -n "$ri" ] || { echo "restore-image not built in this run, skipping"; exit 0; }
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils
+          sudo chmod 666 /dev/kvm || true
+          tmp=$(mktemp -d)
+          dpkg-deb -x "$ri" "$tmp"
+          kernel="$tmp/usr/lib/x86_64-linux-gnu/proxmox-backup/file-restore/bzImage"
+          initrd="$tmp/usr/lib/x86_64-linux-gnu/proxmox-backup/file-restore/initramfs.img"
+          set +e
+          timeout 120 qemu-system-x86_64 \
+            -enable-kvm -m 1024 -nographic -no-reboot \
+            -kernel "$kernel" -initrd "$initrd" \
+            -append "console=ttyS0" > qemu-boot.log 2>&1
+          rc=$?
+          set -e
+          cat qemu-boot.log
+          ! grep -qi 'kernel panic' qemu-boot.log
+          grep -qi 'restore-daemon' qemu-boot.log

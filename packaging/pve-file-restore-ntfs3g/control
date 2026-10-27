@@ -1,0 +1,15 @@
+Package: pve-file-restore-ntfs3g
+Version: @VERSION@
+Section: admin
+Priority: optional
+Architecture: all
+Maintainer: junglivre <junglivre@users.noreply.github.com>
+Depends: proxmox-backup-file-restore-ntfs3g, proxmox-backup-restore-image-ntfs3g
+Description: NTFS-3G File Restore for Proxmox VE (metapackage)
+ Pulls in the ntfs-3g-patched Proxmox File Restore packages
+ (proxmox-backup-file-restore and proxmox-backup-restore-image) through their
+ virtual package names, so an unpatched official package can never satisfy
+ this dependency.
+ .
+ Also installs /usr/sbin/pve-file-restore-ntfs3g-check, which verifies that
+ the patch is active on this node (use --json for machine-readable output).

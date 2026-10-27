@@ -1,0 +1,14 @@
+Package: ntfs-3g-plugin-dedup
+Version: @VERSION@
+Section: admin
+Priority: optional
+Architecture: amd64
+Maintainer: junglivre <junglivre@users.noreply.github.com>
+Depends: ntfs-3g
+Description: Windows Server Data Deduplication plugin for ntfs-3g
+ Read-only ntfs-3g plugin for the Windows Server Data Deduplication reparse
+ point 0x80000013 (including format 0x0103). ntfs-3g loads it automatically
+ when it encounters a deduplicated file.
+ .
+ Built from smx-smx/ntfs-3g-dedup-plugin with a patch for FUSE 3. Upstream is
+ GPL-2.0-only; see /usr/share/doc/ntfs-3g-plugin-dedup/copyright.
