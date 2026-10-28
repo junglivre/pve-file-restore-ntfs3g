@@ -4,10 +4,7 @@ name: build
 # patches/ or packaging/. Also called by release.yml.
 on:
   pull_request:
-  push:
-    branches: [master]
   workflow_call:
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -34,10 +31,8 @@ jobs:
           else
             base="${{ github.event.before }}"
           fi
-          # A workflow_dispatch / workflow_call without a meaningful base
-          # builds everything.
+          # A reusable call without a push base builds every component.
           if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ] \
-              || [ "${{ github.event_name }}" = workflow_dispatch ] \
               || [ "${{ github.event_name }}" = workflow_call ]; then
             echo "file-restore=true"  >> "$GITHUB_OUTPUT"
             echo "restore-image=true" >> "$GITHUB_OUTPUT"
@@ -45,27 +40,33 @@ jobs:
             echo "meta=true"          >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          changed=$(git diff --name-only "$base" HEAD -- upstream.lock patches/ packaging/ || true)
+          changed=$(git diff --name-only "$base" HEAD -- upstream.lock patches/ packaging/ scripts/ tests/ || true)
           echo "changed files:"; echo "$changed"
-          comp() {
-            local name=$1 lockfile=$2
-            # diff lines are prefixed with +/- (e.g. when upstream.lock is new)
-            if git diff "$base" HEAD -- upstream.lock | grep -qE "^[+-]$name[[:space:]]" \
-                || grep -q "$lockfile" <<<"$changed"; then
-              echo true
-            else
-              echo false
-            fi
+          lock_changed() {
+            git diff "$base" HEAD -- upstream.lock | grep -qE "^[+-]$1[[:space:]]"
           }
-          echo "file-restore=$(comp file-restore patches/proxmox-backup-ntfs3g-fallback.patch)" >> "$GITHUB_OUTPUT"
-          echo "restore-image=$(comp restore-image patches/proxmox-backup-restore-image-ntfs3g.patch)" >> "$GITHUB_OUTPUT"
-          echo "dedup-plugin=$(comp dedup-plugin patches/ntfs-3g-dedup-plugin-fuse3.patch)" >> "$GITHUB_OUTPUT"
-          if git diff "$base" HEAD -- upstream.lock | grep -qE '^[+-]meta[[:space:]]' \
-              || grep -q '^packaging/pve-file-restore-ntfs3g/' <<<"$changed"; then
-            echo "meta=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "meta=false" >> "$GITHUB_OUTPUT"
+          common=false
+          if grep -qE '^scripts/(build\.sh|build-in-container\.sh|lib-lock\.sh)$' <<<"$changed"; then
+            common=true
           fi
+          file_restore=false
+          restore_image=false
+          dedup_plugin=false
+          meta=false
+          { $common || lock_changed file-restore || grep -qF 'patches/proxmox-backup-ntfs3g-fallback.patch' <<<"$changed"; } && file_restore=true
+          { $common || lock_changed dedup-plugin || grep -qF 'patches/ntfs-3g-dedup-plugin-fuse3.patch' <<<"$changed"; } && dedup_plugin=true
+          # The plugin is embedded in the restore image, so its lock update
+          # must rebuild that image even if the image source pin is unchanged.
+          { $common || lock_changed restore-image || $dedup_plugin || grep -qF 'patches/proxmox-backup-restore-image-ntfs3g.patch' <<<"$changed"; } && restore_image=true
+          # Boot smoke injects the freshly built daemon into a changed restore
+          # image, so an image build also needs the matching daemon artifact.
+          $restore_image && file_restore=true
+
+          { $common || lock_changed meta || grep -qF 'packaging/pve-file-restore-ntfs3g/' <<<"$changed"; } && meta=true
+          echo "file-restore=$file_restore" >> "$GITHUB_OUTPUT"
+          echo "restore-image=$restore_image" >> "$GITHUB_OUTPUT"
+          echo "dedup-plugin=$dedup_plugin" >> "$GITHUB_OUTPUT"
+          echo "meta=$meta" >> "$GITHUB_OUTPUT"
 
   build-file-restore:
     needs: changes
@@ -80,18 +81,14 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends git ca-certificates
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Cache cargo build
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: .build
-          key: file-restore-${{ hashFiles('upstream.lock', 'patches/proxmox-backup-ntfs3g-fallback.patch') }}
-          restore-keys: file-restore-
       - name: Build proxmox-backup-file-restore
         env:
           BUILD_COMPONENT: file-restore
           PROJECT_DIR: ${{ github.workspace }}
           WORK_DIR: ${{ github.workspace }}/.build
           OUTPUT_DIR: ${{ github.workspace }}/dist
+          DEBFULLNAME: ${{ vars.DEBFULLNAME }}
+          DEBEMAIL: ${{ vars.DEBEMAIL }}
         run: |
           set -euo pipefail
           bash scripts/build-in-container.sh 2>&1 | tee build-file-restore.log
@@ -127,6 +124,9 @@ jobs:
           sudo systemctl restart docker
           df -h /mnt
       - name: Build proxmox-backup-restore-image
+        env:
+          DEBFULLNAME: ${{ vars.DEBFULLNAME }}
+          DEBEMAIL: ${{ vars.DEBEMAIL }}
         run: |
           set -euo pipefail
           ./scripts/build.sh --component restore-image 2>&1 | tee build-restore-image.log
@@ -193,6 +193,11 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Installer and checker shell tests
+        run: |
+          set -euo pipefail
+          tests/cluster-install/test.sh
+          tests/check-command/test.sh
       - name: Download artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -209,24 +214,33 @@ jobs:
           if [ -n "$fr" ]; then
             echo "== file-restore checks: $fr"
             dpkg-deb -I "$fr" | grep -q 'Provides: proxmox-backup-file-restore-ntfs3g'
+            dpkg-deb -I "$fr" | grep -q 'Maintainer: pve-file-restore-ntfs3g'
+
             tmp=$(mktemp -d)
             dpkg-deb -x "$fr" "$tmp"
             grep -qF 'try FUSE mount using ntfs-3g' \
               < <(strings "$tmp/usr/lib/x86_64-linux-gnu/proxmox-backup/file-restore/proxmox-restore-daemon")
             grep -qF 'remounting with ntfs-3g' \
               < <(strings "$tmp/usr/lib/x86_64-linux-gnu/proxmox-backup/file-restore/proxmox-restore-daemon")
+            zcat "$tmp/usr/share/doc/proxmox-backup-file-restore/changelog.Debian.gz" \
+              | grep -qF 'Rebuild with the pve-file-restore-ntfs3g patch set.'
+
             rm -rf "$tmp"
           fi
 
           if [ -n "$ri" ]; then
             echo "== restore-image checks: $ri"
             dpkg-deb -I "$ri" | grep -q 'Provides: proxmox-backup-restore-image-ntfs3g'
+            dpkg-deb -I "$ri" | grep -q 'Maintainer: pve-file-restore-ntfs3g'
+
             tmp=$(mktemp -d)
             dpkg-deb -x "$ri" "$tmp"
             img="$tmp/usr/lib/x86_64-linux-gnu/proxmox-backup/file-restore/initramfs.img"
             grep -qx 'usr/bin/ntfs-3g' < <(lsinitramfs "$img")
             grep -qx 'usr/lib/x86_64-linux-gnu/ntfs-3g/ntfs-plugin-80000013.so' < <(lsinitramfs "$img")
             grep -q 'libfuse3' < <(lsinitramfs "$img")
+            zcat "$tmp/usr/share/doc/proxmox-backup-restore-image/changelog.Debian.gz" \
+              | grep -qF 'Rebuild with the pve-file-restore-ntfs3g patch set.'
             rm -rf "$tmp"
           fi
 
@@ -239,10 +253,10 @@ jobs:
       - name: Metapackage dependency test
         run: |
           set -euo pipefail
-          meta=$(find artifacts/meta -name 'pve-file-restore-ntfs3g_*.deb' | head -1)
+          meta=$(find artifacts/meta -name 'pve-file-restore-ntfs3g_*.deb' 2>/dev/null | head -1 || true)
           [ -n "$meta" ] || { echo "meta package not built in this run, skipping"; exit 0; }
-          fr=$(find artifacts/file-restore -name 'proxmox-backup-file-restore_*.deb' | head -1)
-          ri=$(find artifacts/restore-image -name 'proxmox-backup-restore-image_*.deb' | head -1)
+          fr=$(find artifacts/file-restore -name 'proxmox-backup-file-restore_*.deb' 2>/dev/null | head -1 || true)
+          ri=$(find artifacts/restore-image -name 'proxmox-backup-restore-image_*.deb' 2>/dev/null | head -1 || true)
           [ -n "$fr" ] && [ -n "$ri" ] || { echo "patched packages not in this run, skipping"; exit 0; }
 
           docker run --rm -v "$PWD/artifacts:/artifacts:ro" \
@@ -250,29 +264,45 @@ jobs:
             bash -euxo pipefail -c '
               export DEBIAN_FRONTEND=noninteractive
               apt-get update -qq
-              # the file-restore postinst regenerates the cached initramfs
-              apt-get install -y --no-install-recommends cpio
+              apt-get install -y --no-install-recommends cpio dpkg-dev
               meta=$(find /artifacts/meta -name "pve-file-restore-ntfs3g_*.deb" | head -1)
               fr=$(find /artifacts/file-restore -name "proxmox-backup-file-restore_*.deb" | head -1)
               ri=$(find /artifacts/restore-image -name "proxmox-backup-restore-image_*.deb" | head -1)
-              # Installing the metapackage alone MUST fail: the official
-              # packages do not provide the virtual ntfs3g names.
-              if apt-get install -y "$meta"; then
-                echo "metapackage installed without the patched packages: FAIL" >&2
+              fr_version=$(dpkg-deb -f "$fr" Version)
+              ri_version=$(dpkg-deb -f "$ri" Version)
+              fr_upstream=${fr_version%+ntfs3g*}
+              ri_upstream=${ri_version%+ntfs3g*}
+              echo "deb [trusted=yes] http://download.proxmox.com/debian/pve trixie pve-no-subscription" >/etc/apt/sources.list.d/proxmox.list
+              apt-get update -qq
+              mkdir -p /repo/official /repo/patched
+              (cd /repo/official && apt-get download \
+                "proxmox-backup-file-restore=$fr_upstream" \
+                "proxmox-backup-restore-image=$ri_upstream")
+              cp "$fr" "$ri" "$meta" /repo/patched/
+              for repo in /repo/official /repo/patched; do
+                (cd "$repo" && dpkg-scanpackages . /dev/null | gzip -9c > Packages.gz)
+              done
+              echo "deb [trusted=yes] file:/repo/official ./" >/etc/apt/sources.list.d/official-local.list
+              apt-get update -qq
+              # The official packages are present, but do not provide the
+              # patched virtual dependencies, so meta alone must be refused.
+              if apt-get install -y --no-install-recommends "$meta"; then
+                echo "metapackage installed with only official packages: FAIL" >&2
                 exit 1
               fi
-              # With the patched packages it MUST succeed.
-              apt-get install -y "$fr" "$ri" "$meta"
+              echo "deb [trusted=yes] file:/repo/patched ./" >/etc/apt/sources.list.d/patched-local.list
+              apt-get update -qq
+              apt-get install -y --no-install-recommends pve-file-restore-ntfs3g
             '
       - name: Dedup plugin fixture test
         run: |
           set -euo pipefail
+          if [ ! -f tests/fixtures/ntfs-dedup.img.zst ]; then
+            echo "::error::missing required synthetic Windows Data Dedup fixture: tests/fixtures/ntfs-dedup.img.zst (see tests/README.md)"
+            exit 1
+          fi
           deb=$(find artifacts/dedup-plugin -name 'ntfs-3g-plugin-dedup_*.deb' 2>/dev/null | head -1 || true)
           [ -n "$deb" ] || { echo "plugin not built in this run, skipping"; exit 0; }
-          if [ ! -f tests/fixtures/ntfs-dedup.img.zst ]; then
-            echo "::warning::tests/fixtures/ntfs-dedup.img.zst not present (see tests/README.md); skipping fixture test"
-            exit 0
-          fi
           docker run --rm --device /dev/fuse --cap-add SYS_ADMIN \
             -v "$PWD:/repo:ro" \
             debian:13@sha256:4c25275446ca371766b8b093c696782eabce06263fccacb8d5d813b3dc44b308 \
@@ -292,14 +322,24 @@ jobs:
         run: |
           set -euo pipefail
           ri=$(find artifacts/restore-image -name 'proxmox-backup-restore-image_*.deb' 2>/dev/null | head -1 || true)
-          [ -n "$ri" ] || { echo "restore-image not built in this run, skipping"; exit 0; }
+          fr=$(find artifacts/file-restore -name 'proxmox-backup-file-restore_*.deb' 2>/dev/null | head -1 || true)
+          [ -n "$ri" ] && [ -n "$fr" ] || { echo "restore image or daemon not built in this run, skipping"; exit 0; }
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils
+          sudo apt-get install -y --no-install-recommends cpio qemu-system-x86 qemu-utils
           sudo chmod 666 /dev/kvm || true
           tmp=$(mktemp -d)
-          dpkg-deb -x "$ri" "$tmp"
-          kernel="$tmp/usr/lib/x86_64-linux-gnu/proxmox-backup/file-restore/bzImage"
-          initrd="$tmp/usr/lib/x86_64-linux-gnu/proxmox-backup/file-restore/initramfs.img"
+          dpkg-deb -x "$ri" "$tmp/restore-image"
+          dpkg-deb -x "$fr" "$tmp/file-restore"
+          kernel="$tmp/restore-image/usr/lib/x86_64-linux-gnu/proxmox-backup/file-restore/bzImage"
+          initrd="$tmp/restore-image/usr/lib/x86_64-linux-gnu/proxmox-backup/file-restore/initramfs.img"
+          # The upstream image deliberately omits the daemon. Append a second
+          # newc archive with the freshly built daemon, matching how the PVE
+          # restore path supplies it, so this asserts actual daemon startup.
+          mkdir "$tmp/inject"
+          install -m 0755 \
+            "$tmp/file-restore/usr/lib/x86_64-linux-gnu/proxmox-backup/file-restore/proxmox-restore-daemon" \
+            "$tmp/inject/proxmox-restore-daemon"
+          (cd "$tmp/inject" && find . -print0 | cpio --null -o --format=newc) >> "$initrd"
           set +e
           timeout 120 qemu-system-x86_64 \
             -enable-kvm -m 1024 -nographic -no-reboot \
@@ -309,4 +349,5 @@ jobs:
           set -e
           cat qemu-boot.log
           ! grep -qi 'kernel panic' qemu-boot.log
-          grep -qi 'restore-daemon' qemu-boot.log
+          ! grep -qi '/proxmox-restore-daemon missing from image' qemu-boot.log
+          grep -qF '[init-shim] reached daemon start' qemu-boot.log

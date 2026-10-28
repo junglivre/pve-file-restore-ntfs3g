@@ -89,6 +89,19 @@ build_dependencies() {
     )
 }
 
+add_changelog_entry() {
+    local source_dir=$1 version=$2
+    (
+        cd "$source_dir"
+        # Defaults are a non-personal project identity. CI can override them
+        # with repository variables DEBFULLNAME and DEBEMAIL set by the owner.
+        export DEBFULLNAME="${DEBFULLNAME:-pve-file-restore-ntfs3g}"
+        export DEBEMAIL="${DEBEMAIL:-noreply@pve-file-restore-ntfs3g.invalid}"
+        dch --newversion "$version" --distribution trixie --force-distribution \
+            "Rebuild with the pve-file-restore-ntfs3g patch set."
+    )
+}
+
 build_file_restore() {
     local version commit
     version=$(lock_field file-restore version)
@@ -97,6 +110,8 @@ build_file_restore() {
 
     clone_pinned "$PBS_REPOSITORY" "$commit" $WORK_DIR/src/proxmox-backup
     patch -d $WORK_DIR/src/proxmox-backup -p1 < $PROJECT_DIR/patches/proxmox-backup-ntfs3g-fallback.patch
+    add_changelog_entry "$WORK_DIR/src/proxmox-backup" "$version"
+
     build_dependencies $WORK_DIR/src/proxmox-backup
     (
         cd $WORK_DIR/src/proxmox-backup
@@ -131,6 +146,8 @@ build_restore_image() {
         < $PROJECT_DIR/patches/ntfs-3g-dedup-plugin-fuse3.patch
     patch -d $WORK_DIR/src/proxmox-backup-restore-image -p1 \
         < $PROJECT_DIR/patches/proxmox-backup-restore-image-ntfs3g.patch
+    add_changelog_entry "$WORK_DIR/src/proxmox-backup-restore-image" "$version"
+
     build_dependencies $WORK_DIR/src/proxmox-backup-restore-image
     (
         cd $WORK_DIR/src/proxmox-backup-restore-image
@@ -201,7 +218,7 @@ build_meta() {
     sed -e "s/@VERSION@/$version/" \
         $PROJECT_DIR/packaging/pve-file-restore-ntfs3g/control > "$staging/DEBIAN/control"
     dpkg-deb --root-owner-group --build "$staging" \
-        "$OUTPUT_DIR/pve-file-restore-ntfs3g_${version}_amd64.deb"
+        "$OUTPUT_DIR/pve-file-restore-ntfs3g_${version}_all.deb"
 }
 
 case $COMPONENT in

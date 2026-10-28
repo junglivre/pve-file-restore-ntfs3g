@@ -42,7 +42,7 @@ jobs:
           changelog_section() {
             local tag=$1
             awk -v tag="### $tag" '
-              $0 == tag { capture = 1; next }
+              index($0, tag) == 1 { capture = 1; next }
               capture && /^(###|##) / { exit }
               capture { print }
             ' CHANGELOG.md
@@ -62,9 +62,7 @@ jobs:
 
             version=$(lock_field "$component" version)
             commit=$(lock_field "$component" commit)
-            # git refs cannot contain '~' (DEP-14 style encoding), e.g.
-            # dedup-plugin/0~git20260721.885c77b-1 -> dedup-plugin/0_git20260721.885c77b-1
-            tag="$component/${version//'~'/'_'}"
+            tag="$component/$version"
 
             if gh release view "$tag" >/dev/null 2>&1; then
               echo ":: $tag already exists, skipping (releases are immutable; a fix is a new version)"
@@ -72,31 +70,22 @@ jobs:
             fi
 
             work=$(mktemp -d)
+            notes=$(mktemp)
             cp "$deb" "$work/"
-            # GitHub sanitizes asset file names ('~' -> '.'), which would
-            # break sha256sum -c for consumers. Rename to the sanitized
-            # form up front so assets and SHA256SUMS always match.
-            for f in "$work"/*'~'*; do
-              [ -e "$f" ] || continue
-              mv "$f" "${f//'~'/'.'}"
-            done
             (cd "$work" && sha256sum *.deb > SHA256SUMS)
-            log=$(find "artifacts/$component" -name "build-${component}.log" 2>/dev/null | head -1 || true)
-            [ -n "$log" ] && cp "$log" "$work/"
-
             {
               changelog_section "$tag"
               echo
               echo "Upstream commit: \`$commit\`"
-              echo "Build log: attached. Verify with \`sha256sum -c SHA256SUMS\`."
-            } > "$work/notes.md"
+              echo "Verify the attached package with \`sha256sum -c SHA256SUMS\`."
+            } > "$notes"
 
-            # gh creates the tag via the API: a plain `git push` of a tag
-            # pointing at commits that touch .github/workflows is rejected
-            # for the GITHUB_TOKEN (missing `workflows` permission).
+            # Only the package and checksum are release assets; the release
+            # description is supplied out of band and cannot be downloaded.
             gh release create "$tag" --prerelease --target "${{ github.sha }}" \
-              --title "$tag" --notes-file "$work/notes.md" "$work"/*
+              --title "$tag" --notes-file "$notes" "$work"/*.deb "$work/SHA256SUMS"
             published+=("$tag")
+            rm -f "$notes"
             rm -rf "$work"
           done
 

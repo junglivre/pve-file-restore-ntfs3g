@@ -22,4 +22,4 @@ container that has the freshly built `ntfs-3g-plugin-dedup` installed, then
 runs `sha256sum -c fixtures/ntfs-dedup.sha256`. Wrong content from a missing
 or broken plugin fails the job.
 
-While the fixture is absent, the step is skipped with a warning.
+While the fixture is absent, CI fails with an explicit prerequisite error.

@@ -1,15 +1,21 @@
 name: upstream-watch
 
-# Daily: compare upstream versions with upstream.lock and open a bump PR
-# (label upstream-bump) or an issue when human review is needed.
-#
-# PRs are created with BOT_TOKEN (a fine-grained PAT or GitHub App token
-# restricted to this repository): PRs created by GITHUB_TOKEN would not
-# trigger the CI workflow.
+# Daily: compare upstream versions with upstream.lock and prepare one batched
+# review PR. BOT_TOKEN is required: GITHUB_TOKEN-created PRs do not trigger CI.
 on:
   schedule:
     - cron: '17 4 * * *'
   workflow_dispatch:
+    inputs:
+      simulate_from:
+        description: 'Comma-separated component=upstream-version pairs; creates a draft PR'
+        required: false
+        type: string
+      dry_run:
+        description: 'Check candidates without creating a branch, PR, or issue'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -21,25 +27,33 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Watch upstream and prepare bump PRs
+        with:
+          fetch-depth: 0
+      - name: Watch upstream and prepare bump PR
         env:
-          GH_TOKEN: ${{ secrets.BOT_TOKEN || github.token }}
+          GH_TOKEN: ${{ secrets.BOT_TOKEN }}
           PUSH: '1'
+          SIMULATE_FROM: ${{ inputs.simulate_from }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
         run: |
           set -euo pipefail
+          if [ "$DRY_RUN" != 1 ]; then
+            test -n "$GH_TOKEN" || { echo 'BOT_TOKEN is required' >&2; exit 1; }
+            git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
+          fi
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends dpkg-dev zstd curl
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           ./scripts/upstream-watch.sh
       - name: Keep the schedule alive
-        # Scheduled workflows in public repositories are disabled after 60
-        # days without activity. If the last commit is older than 45 days,
-        # record this run in status/last-check and commit it.
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.BOT_TOKEN }}
         run: |
           set -euo pipefail
+          test -n "$GH_TOKEN" || { echo 'BOT_TOKEN is required' >&2; exit 1; }
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
           last=$(git log -1 --format=%ct)
           now=$(date +%s)
           age_days=$(( (now - last) / 86400 ))
