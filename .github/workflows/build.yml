@@ -123,12 +123,17 @@ jobs:
           retention-days: 30
 
   build-restore-image:
-    needs: changes
+    needs: [changes, build-dedup-plugin]
     if: needs.changes.outputs.restore-image == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Use the plugin package built by the dependency job
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: dedup-plugin
+          path: dist
       - name: Build proxmox-backup-restore-image
         env:
           WORK_DIR: ${{ github.workspace }}/.build
@@ -234,6 +239,15 @@ jobs:
           [ "$BUILT_DEDUP_PLUGIN" = true ] && built_components+=(dedup-plugin)
           [ "$BUILT_META" = true ] && built_components+=(meta)
           tests/artifacts/check.sh artifacts "${built_components[@]}"
+      - name: Verify the image contains the packaged plugin byte-for-byte
+        if: needs.changes.outputs.restore-image == 'true'
+        run: |
+          set -euo pipefail
+          restore_image=$(find artifacts/restore-image -maxdepth 1 -type f \
+            -name 'proxmox-backup-restore-image_*.deb' -print)
+          plugin=$(find artifacts/dedup-plugin -maxdepth 1 -type f \
+            -name 'ntfs-3g-plugin-dedup_*.deb' -print)
+          tests/artifacts/plugin-match.sh "$restore_image" "$plugin"
       - name: Verify metapackage dependency resolution
         run: |
           set -euo pipefail

@@ -12,6 +12,8 @@ OUTPUT_DIR=${OUTPUT_DIR:-/out}
 
 # shellcheck source=./scripts/lib-lock.sh
 source "$PROJECT_DIR/scripts/lib-lock.sh"
+# shellcheck source=./scripts/lib-patch.sh
+source "$PROJECT_DIR/scripts/lib-patch.sh"
 cd "$PROJECT_DIR"
 
 COMPONENT=${BUILD_COMPONENT:?BUILD_COMPONENT is required}
@@ -40,6 +42,11 @@ apt-get install -y --no-install-recommends \
     autoconf automake libtool pkg-config ntfs-3g-dev libfuse3-dev python3-sphinx \
     initramfs-tools-core
 
+# The project is bind-mounted from the host and owned by the host user, while
+# this container runs as root; git refuses such a tree ("dubious ownership")
+# and SOURCE_DATE_EPOCH comes from `git log`. Trust only this mount.
+git config --global --add safe.directory "$PROJECT_DIR"
+
 curl -fsSL "$PROXMOX_KEYRING_URL" -o /usr/share/keyrings/proxmox-archive-keyring-trixie.gpg
 key_hash=$(sha256sum /usr/share/keyrings/proxmox-archive-keyring-trixie.gpg)
 key_hash=${key_hash%% *}
@@ -59,22 +66,6 @@ curl -fsSL http://download.proxmox.com/debian/devel/dists/trixie/InRelease \
     -o "$WORK_DIR/proxmox-devel-InRelease"
 grep -E '^(Date|Valid-Until):' "$WORK_DIR/proxmox-devel-InRelease" || true
 sha256sum "$WORK_DIR/proxmox-devel-InRelease"
-
-clone_pinned() {
-    local component=$1 destination=$2 commit url ref fetched
-    commit=$(lock_field "$component" commit)
-    url=$(lock_source_url "$component")
-    ref=$(lock_source_ref "$component")
-    rm -rf "$destination"
-    git clone --quiet "$url" "$destination"
-    git -C "$destination" fetch --quiet origin "$ref"
-    fetched=$(git -C "$destination" rev-parse FETCH_HEAD)
-    git -C "$destination" merge-base --is-ancestor "$commit" "$fetched" || {
-        echo "Pinned revision $commit is not reachable from $url#$ref" >&2
-        exit 1
-    }
-    git -C "$destination" checkout --quiet "$commit"
-}
 
 build_dependencies() {
     local source_dir=$1
@@ -99,10 +90,9 @@ build_file_restore() {
     local version
     version=$(lock_field file-restore version)
 
-    clone_pinned file-restore "$WORK_DIR/src/proxmox-backup"
-    while IFS= read -r patch_file; do
-        patch -d "$WORK_DIR/src/proxmox-backup" -p1 < "$PROJECT_DIR/$patch_file"
-    done < <(lock_patch_paths file-restore)
+    rm -rf "$WORK_DIR/src/proxmox-backup"
+    patch_prepare_tree file-restore "$WORK_DIR/src/proxmox-backup"
+    patch_apply_locked file-restore "$WORK_DIR/src/proxmox-backup"
     add_changelog_entry "$WORK_DIR/src/proxmox-backup" "$version"
 
     build_dependencies "$WORK_DIR/src/proxmox-backup"
@@ -124,24 +114,24 @@ build_file_restore() {
 }
 
 build_restore_image() {
-    local version patch_file
+    local version plugin_version plugin_deb plugin_root
     version=$(lock_field restore-image version)
+    plugin_version=$(lock_field dedup-plugin version)
+    plugin_deb="$OUTPUT_DIR/ntfs-3g-plugin-dedup_${plugin_version}_amd64.deb"
+    [ -f "$plugin_deb" ] || {
+        echo "missing packaged dedup plugin: $plugin_deb" >&2
+        exit 1
+    }
 
-    clone_pinned restore-image "$WORK_DIR/src/proxmox-backup-restore-image"
-    clone_pinned dedup-plugin "$WORK_DIR/src/ntfs-3g-dedup-plugin"
-    mkdir -p "$WORK_DIR/src/proxmox-backup-restore-image/src/ntfs-3g-dedup-plugin"
-    git -C "$WORK_DIR/src/ntfs-3g-dedup-plugin" archive --format=tar HEAD \
-        | tar -x -C "$WORK_DIR/src/proxmox-backup-restore-image/src/ntfs-3g-dedup-plugin"
-    while IFS= read -r patch_file; do
-        case $patch_file in
-            *ntfs-3g-dedup-plugin*)
-                patch -d "$WORK_DIR/src/proxmox-backup-restore-image/src/ntfs-3g-dedup-plugin" \
-                    -p1 < "$PROJECT_DIR/$patch_file"
-                ;;
-            *) patch -d "$WORK_DIR/src/proxmox-backup-restore-image" -p1 \
-                < "$PROJECT_DIR/$patch_file" ;;
-        esac
-    done < <(lock_patch_paths restore-image)
+    rm -rf "$WORK_DIR/src/proxmox-backup-restore-image"
+    patch_prepare_tree restore-image "$WORK_DIR/src/proxmox-backup-restore-image"
+    patch_apply_locked restore-image "$WORK_DIR/src/proxmox-backup-restore-image"
+    plugin_root=$(mktemp -d)
+    dpkg-deb -x "$plugin_deb" "$plugin_root"
+    install -D -m 0555 \
+        "$plugin_root/usr/lib/x86_64-linux-gnu/ntfs-3g/ntfs-plugin-80000013.so" \
+        "$WORK_DIR/src/proxmox-backup-restore-image/src/ntfs-3g-dedup-plugin/.libs/ntfs-plugin-80000013.so"
+    rm -rf "$plugin_root"
     add_changelog_entry "$WORK_DIR/src/proxmox-backup-restore-image" "$version"
 
     build_dependencies "$WORK_DIR/src/proxmox-backup-restore-image"
@@ -162,14 +152,12 @@ build_restore_image() {
 }
 
 build_dedup_plugin() {
-    local version patch_file
+    local version
     version=$(lock_field dedup-plugin version)
 
-    clone_pinned dedup-plugin "$WORK_DIR/src/ntfs-3g-dedup-plugin"
-    while IFS= read -r patch_file; do
-        patch -d "$WORK_DIR/src/ntfs-3g-dedup-plugin" -p1 \
-            < "$PROJECT_DIR/$patch_file"
-    done < <(lock_patch_paths dedup-plugin)
+    rm -rf "$WORK_DIR/src/ntfs-3g-dedup-plugin"
+    patch_prepare_tree dedup-plugin "$WORK_DIR/src/ntfs-3g-dedup-plugin"
+    patch_apply_locked dedup-plugin "$WORK_DIR/src/ntfs-3g-dedup-plugin"
     (
         cd "$WORK_DIR/src/ntfs-3g-dedup-plugin"
         # The plugin's configure looks for fuse 2; point it at fuse3, the

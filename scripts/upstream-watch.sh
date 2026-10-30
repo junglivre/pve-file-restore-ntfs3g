@@ -11,6 +11,8 @@ ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$ROOT_DIR"
 # shellcheck source=./scripts/lib-lock.sh
 source scripts/lib-lock.sh
+# shellcheck source=./scripts/lib-patch.sh
+source scripts/lib-patch.sh
 
 PUSH=${PUSH:-0}
 DRY_RUN=${DRY_RUN:-0}
@@ -76,17 +78,12 @@ write_lock_line() {
 
 queue_component_bump() {
     local component=$1 new_upstream=$2
-    local patch_file repo_url disk_check=''
+    local disk_check=''
     case $component in
         file-restore)
-            patch_file=patches/proxmox-backup-ntfs3g-fallback.patch
-            repo_url='https://git.proxmox.com/git/proxmox-backup.git'
             disk_check=proxmox-restore-daemon/src/proxmox_restore_daemon/disk.rs
             ;;
-        restore-image)
-            patch_file=patches/proxmox-backup-restore-image-ntfs3g.patch
-            repo_url='https://git.proxmox.com/git/proxmox-backup-restore-image.git'
-            ;;
+        restore-image) ;;
         *) echo "unknown component: $component" >&2; return 1 ;;
     esac
 
@@ -97,38 +94,34 @@ queue_component_bump() {
         return 0
     fi
 
-    local wt
+    local wt selected patches source
     wt=$(mktemp -d)
-    trap 'rm -rf "$wt"' RETURN
-    git clone --quiet "$repo_url" "$wt/src"
-    git -C "$wt/src" checkout --quiet "$commit"
+    if ! patch_prepare_tree "$component" "$wt/src" "$commit"; then
+        rm -rf "$wt"
+        open_issue "upstream $new_upstream: source commit unavailable" \
+            "The locked source cannot reach release commit $commit for $component. Manual review needed."
+        return 0
+    fi
     disk_source=''
     if [ -n "$disk_check" ]; then
-        disk_source=$(git -C "$wt/src" show "$commit:$disk_check")
+        disk_source=$(cat "$wt/src/$disk_check")
     fi
     if [ -n "$disk_source" ] && grep -qF 'ntfs-3g' <<<"$disk_source"; then
+        rm -rf "$wt"
         open_issue "upstream incorporated the ntfs-3g fallback" \
             "Commit $commit ($new_upstream) already mentions \`ntfs-3g\` in \`$disk_check\`. The daemon patch needs human review."
         return 0
     fi
-    local apply_rc=0
-    if [ "$component" = restore-image ]; then
-        git clone --quiet "$DEDUP_REPO" "$wt/plugin"
-        git -C "$wt/plugin" checkout --quiet "$(lock_field dedup-plugin commit)"
-        mkdir -p "$wt/src/src/ntfs-3g-dedup-plugin"
-        git -C "$wt/plugin" archive --format=tar HEAD | tar -x -C "$wt/src/src/ntfs-3g-dedup-plugin"
-        git -C "$wt/src" apply --check --directory=src/ntfs-3g-dedup-plugin \
-            "$ROOT_DIR/patches/ntfs-3g-dedup-plugin-fuse3.patch" || apply_rc=1
-    fi
-    git -C "$wt/src" apply --check "$ROOT_DIR/$patch_file" || apply_rc=1
-    if [ "$apply_rc" -ne 0 ]; then
+    if ! selected=$(patch_select_paths "$component" "$commit"); then
+        rm -rf "$wt"
         open_issue "upstream $new_upstream: patch does not apply" \
-            "\`git apply --check $patch_file\` fails on $component $new_upstream ($commit). Manual rebase needed."
+            "No current or staged next patch selection applies on $component $new_upstream ($commit). Manual rebase needed."
         return 0
     fi
+    rm -rf "$wt"
 
-    local version="${new_upstream}+ntfs3g1" patches source
-    patches=$(lock_field "$component" patches)
+    local version="${new_upstream}+ntfs3g1"
+    patches=$selected
     source=$(lock_field "$component" source)
     write_lock_line "$component" "$version" "$commit" "$patches" "$source"
     UPDATES+=("$component $version")
@@ -137,7 +130,7 @@ queue_component_bump() {
 
 queue_dedup_bump() {
     local head current tmp date short version patches source
-    head=$(git ls-remote "$DEDUP_REPO" refs/heads/main | awk '{print $1}')
+    head=$(git ls-remote "$DEDUP_REPO" "$(lock_source_ref dedup-plugin)" | awk '{print $1}')
     [ -n "$head" ] || { echo "cannot resolve dedup plugin main" >&2; return 1; }
     current=$(lock_field dedup-plugin commit)
     if [ "$head" = "$current" ]; then
@@ -146,33 +139,33 @@ queue_dedup_bump() {
     fi
 
     tmp=$(mktemp -d)
-    trap 'rm -rf "$tmp"' RETURN
-    git clone --quiet "$DEDUP_REPO" "$tmp/src"
-    git -C "$tmp/src" checkout --quiet "$head"
-    if ! git -C "$tmp/src" fetch --quiet origin "$current"; then
+    if ! patch_clone dedup-plugin "$tmp/src" "$head" >/dev/null; then
+        rm -rf "$tmp"
         open_issue "dedup-plugin: pinned commit $current no longer fetchable" \
             "The pinned commit vanished from upstream (force push?). Manual review needed."
         return 0
     fi
     if git -C "$tmp/src" merge-base --is-ancestor "$head" "$current" 2>/dev/null; then
+        rm -rf "$tmp"
         log "dedup-plugin: main is behind the pin; nothing to do"
         return 0
     fi
     if ! git -C "$tmp/src" merge-base --is-ancestor "$current" "$head" 2>/dev/null; then
+        rm -rf "$tmp"
         open_issue "dedup-plugin: main diverged from pin" \
             "main ($head) neither contains nor is contained in pinned commit $current. Manual review needed."
         return 0
     fi
-    if ! git -C "$tmp/src" apply --check "$ROOT_DIR/patches/ntfs-3g-dedup-plugin-fuse3.patch"; then
+    date=$(git -C "$tmp/src" log -1 --format='%cs' | tr -d -)
+    rm -rf "$tmp"
+    if ! patches=$(patch_select_paths dedup-plugin "$head"); then
         open_issue "upstream dedup-plugin ${head:0:7}: patch does not apply" \
-            "\`git apply --check patches/ntfs-3g-dedup-plugin-fuse3.patch\` fails on $head. Manual rebase needed."
+            "No current or staged next patch selection applies on $head. Manual rebase needed."
         return 0
     fi
 
-    date=$(git -C "$tmp/src" log -1 --format='%cs' | tr -d -)
     short=${head:0:7}
     version="0+git${date}.${short}-1"
-    patches=$(lock_field dedup-plugin patches)
     source=$(lock_field dedup-plugin source)
     write_lock_line dedup-plugin "$version" "$head" "$patches" "$source"
     UPDATES+=("dedup-plugin $version")
@@ -182,8 +175,8 @@ queue_dedup_bump() {
     local restore_version restore_upstream restore_rev restore_commit restore_patches restore_source next
     restore_version=$(lock_field restore-image version)
     restore_upstream=${restore_version%%+ntfs3g*}
-    restore_rev=$(lock_field restore-image rev)
-    next=$(( ${restore_rev#ntfs3g} + 1 ))
+    restore_rev=${restore_version##*ntfs3g}
+    next=$(( restore_rev + 1 ))
     restore_commit=$(lock_field restore-image commit)
     restore_patches=$(lock_field restore-image patches)
     restore_source=$(lock_field restore-image source)
@@ -236,6 +229,11 @@ if [ -n "$SIMULATE_FROM" ]; then
         fi
     done
 else
+    if ! tip_result=$(scripts/check-patches.sh --tip 2>&1); then
+        open_issue 'upstream tip breaks patch' "$tip_result"
+    else
+        log "$tip_result"
+    fi
     declare -A PACKAGE_OF=(
         [file-restore]=proxmox-backup-file-restore
         [restore-image]=proxmox-backup-restore-image

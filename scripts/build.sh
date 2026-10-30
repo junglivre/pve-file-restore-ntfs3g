@@ -42,8 +42,36 @@ fi
 
 mkdir -p "$OUTPUT_DIR" "$WORK_DIR"
 # A component build must never select a stale package or checksum from a
-# previous component build.
-find "$OUTPUT_DIR" -maxdepth 1 -type f \( -name '*.deb' -o -name SHA256SUMS \) -delete
+# previous component build. A restore-image build may keep the exact plugin
+# package supplied by its dependency job.
+if [ "$COMPONENT" = restore-image ]; then
+    find "$OUTPUT_DIR" -maxdepth 1 -type f \
+        \( -name 'proxmox-backup-restore-image_*.deb' -o -name SHA256SUMS \) -delete
+else
+    find "$OUTPUT_DIR" -maxdepth 1 -type f \( -name '*.deb' -o -name SHA256SUMS \) -delete
+fi
+
+prepare_plugin_package() {
+    local version package tmp
+    version=$(lock_field dedup-plugin version)
+    package="ntfs-3g-plugin-dedup_${version}_amd64.deb"
+    [ -f "$OUTPUT_DIR/$package" ] && return 0
+    command -v gh >/dev/null 2>&1 || {
+        echo "dedup-plugin release $version is unavailable and gh is required to fetch it" >&2
+        exit 1
+    }
+    tmp=$(mktemp -d)
+    gh release download "dedup-plugin/$version" \
+        --repo "${GH_REPO:?GH_REPO is required to fetch dedup-plugin}" \
+        --pattern "$package" --pattern SHA256SUMS --dir "$tmp"
+    (cd "$tmp" && grep -qx "[0-9a-f][0-9a-f]*  $package" SHA256SUMS && sha256sum -c SHA256SUMS)
+    install -m 0644 "$tmp/$package" "$OUTPUT_DIR/$package"
+    rm -rf "$tmp"
+}
+
+if [ "$COMPONENT" = restore-image ]; then
+    prepare_plugin_package
+fi
 
 docker run --rm --init \
     --mount "type=bind,src=$ROOT_DIR,dst=/project,readonly" \

@@ -94,6 +94,12 @@ lock_input_paths() {
         printf '%s\n' "$path"
     done < <(lock_patch_paths "$component")
 
+    if [ "$component" = restore-image ]; then
+        # The image embeds the separately packaged plugin, so its lock line is
+        # a package input even though the plugin patch is not applied here.
+        printf '%s\n' lock-line/dedup-plugin
+    fi
+
     case $component in
         dedup-plugin) find "$ROOT_DIR/packaging/ntfs-3g-plugin-dedup" -type f -printf '%P\n' |
             sed 's#^#packaging/ntfs-3g-plugin-dedup/#' | sort ;;
@@ -112,6 +118,14 @@ lock_input_hash() {
     local component=$1 path actual manifest
     manifest=$(mktemp)
     while IFS= read -r path; do
+        if [ "$path" = lock-line/dedup-plugin ]; then
+            actual=$(printf 'dedup-plugin version=%s inputs_sha256=%s\n' \
+                "$(lock_field dedup-plugin version)" \
+                "$(lock_field dedup-plugin inputs_sha256)" | sha256sum)
+            actual=${actual%% *}
+            printf '%s  %s\n' "$actual" "$path" >> "$manifest"
+            continue
+        fi
         [ -f "$ROOT_DIR/$path" ] || {
             echo "missing lock input for $component: $path" >&2
             rm -f "$manifest"

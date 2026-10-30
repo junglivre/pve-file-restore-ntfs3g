@@ -152,11 +152,11 @@ grep -qF 'missing build artifact directory' "$TMP/missing-no-artifact.out"
 
 # The promote path uses the same package-field validation: a downloadable
 # release with an incorrect Version must not reach gh release edit.
-bad_tag='meta/2.1.2'
+bad_tag="meta/$meta_version"
 bad_key=${bad_tag//\//__}
 mkdir -p "$STATE/$bad_key.files"
-bad_asset='pve-file-restore-ntfs3g_2.1.2_all.deb'
-make_deb "$TMP/bad-remote" pve-file-restore-ntfs3g "$meta_version" all "$bad_asset"
+bad_asset=$(release_expected_asset meta "$meta_version")
+make_deb "$TMP/bad-remote" pve-file-restore-ntfs3g 0.0.0 all "$bad_asset"
 cp "$TMP/bad-remote/$bad_asset" "$STATE/$bad_key.files/"
 cp "$TMP/bad-remote/SHA256SUMS" "$STATE/$bad_key.files/"
 printf '%s\nSHA256SUMS\n' "$bad_asset" > "$STATE/$bad_key.assets"

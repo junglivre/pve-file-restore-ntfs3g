@@ -19,7 +19,7 @@
 #
 # Debian ordering guarantee: 4.2.8-1 < 4.2.8-1+ntfs3g1 < 4.2.8-2. No epoch.
 
-file-restore   4.2.8-1+ntfs3g3            78f77d53718b351bebacfa4f56f85134616e0b02  patches/proxmox-backup-ntfs3g-fallback.patch  sha256:87b4ec098aa5e766ebcc9e4d645922996be292d46096ee85365d98ebe1b6d8ad  https://git.proxmox.com/git/proxmox-backup.git#master
-restore-image  1.0.0+ntfs3g4              c0b6cd89dab2cc4e02945b5e211d17fc9897a57a  patches/proxmox-backup-restore-image-ntfs3g.patch,patches/ntfs-3g-dedup-plugin-fuse3.patch  sha256:c3845bfe175b19f474e61bde1277df9c017529bf0cdc06da742d08df534804a4  https://git.proxmox.com/git/proxmox-backup-restore-image.git#master
-dedup-plugin   0+git20260721.885c77b-2    885c77ba8b89a75976345dbd4f06d3c39fbd3e31  patches/ntfs-3g-dedup-plugin-fuse3.patch  sha256:b9d6aba5e869a98550ce13caee98cf11c17846aed9b91a8de03ff50abd448251  https://github.com/smx-smx/ntfs-3g-dedup-plugin.git#refs/pull/1/head
-meta           2.1.1                      -                                          -  sha256:f54bbc3928ddb4878305ab82195d37d095d53e54fb1d4099b1d4c42c46a771a6  -
+file-restore   4.2.8-1+ntfs3g6               78f77d53718b351bebacfa4f56f85134616e0b02  patches/proxmox-backup-ntfs3g-fallback.patch                                               sha256:991bade35758609380101e7addfa6ed88ebf12f35c24a3735aa9a8a656eed2f3 https://git.proxmox.com/git/proxmox-backup.git#master
+restore-image  1.0.0+ntfs3g7                 c0b6cd89dab2cc4e02945b5e211d17fc9897a57a  patches/proxmox-backup-restore-image-ntfs3g.patch                                          sha256:278d2715a72d6053d1baae3086ad89b20f167504944317557c39baf3f39c6469 https://git.proxmox.com/git/proxmox-backup-restore-image.git#master
+dedup-plugin   0+git20260721.885c77b-5       885c77ba8b89a75976345dbd4f06d3c39fbd3e31  patches/ntfs-3g-dedup-plugin-fuse3.patch                                                   sha256:cd1b26bb562991a898b882f3285390b3c49ebb5f28c299e53f3b9f1628fb8620 https://github.com/smx-smx/ntfs-3g-dedup-plugin.git#refs/pull/1/head
+meta           2.1.4                         -                                         -                                                                                          sha256:624a6148c58ef08af9f78b16714e90bd5182111a08506457039ffbda8f6b094a -

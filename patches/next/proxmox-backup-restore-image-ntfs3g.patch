@@ -1,0 +1,88 @@
+diff --git a/debian/control b/debian/control
+index 4c24be5..8437bf9 100644
+--- a/debian/control
++++ b/debian/control
+@@ -1,7 +1,8 @@
+ Source: proxmox-backup-restore-image
+ Section: admin
+ Priority: optional
+-Maintainer: Proxmox Support Team <support@proxmox.com>
++Maintainer: junglivre <junglivre@users.noreply.github.com>
++XSBC-Original-Maintainer: Proxmox Support Team <support@proxmox.com>
+ Build-Depends: apt-rdepends,
+                asciidoc-base,
+                automake,
+@@ -19,6 +20,7 @@ Build-Depends: apt-rdepends,
+                libblkid-dev,
+                libdw-dev,
+                libelf-dev,
++               libfuse3-dev,
+                librust-anyhow-1+default-dev,
+                librust-nix-0.29+default-dev,
+                librust-nix-0.29+fs-dev,
+@@ -29,7 +31,9 @@ Build-Depends: apt-rdepends,
+                libtirpc-dev,
+                libtool,
+                lintian,
++               ntfs-3g-dev,
+                perl,
++               pkg-config,
+                python3,
+                rustc,
+                sphinx-common,
+@@ -42,6 +46,8 @@ Homepage: https://www.proxmox.com
+ Package: proxmox-backup-restore-image
+ Architecture: amd64
+ Recommends: proxmox-backup-file-restore,
++Provides: proxmox-backup-restore-image-ntfs3g (= ${binary:Version}),
++ pve-file-restore-ntfs3g-image (= 3),
+ Depends: ${misc:Depends},
+ Breaks: proxmox-backup-file-restore (<< 3.4.2-1)
+ Description: Kernel/initramfs images for Proxmox Backup single-file restore.
+diff --git a/src/build_initramfs.sh b/src/build_initramfs.sh
+index 4e2445c..de550c9 100755
+--- a/src/build_initramfs.sh
++++ b/src/build_initramfs.sh
+@@ -35,6 +35,7 @@ add_pkgs() {
+         done
+         # debconf and gcc are unnecessary, libboost-regex doesn't install on bullseye
+         DEPS=$(echo "$DEPS" |\
++            sed -E 's/libdebconfclient([[:digit:]])?//g' |\
+             sed -E 's/debconf(-2\.0)?//g' |\
+             sed -E 's/libboost-regex([[:digit:]]\.[[:digit:]]+)?//g' |\
+             sed -E 's/gcc-.{1,2}-base//g' |\
+@@ -90,6 +91,7 @@ add_pkgs "
+     libgcrypt20:amd64 \
+     libtirpc3t64:amd64 \
+     lvm2:amd64 \
++    ntfs-3g:amd64 \
+     thin-provisioning-tools:amd64 \
+ " 'base'
+ 
+@@ -103,6 +105,11 @@ if [ -z "$DOWNLOAD_ONLY" ]; then
+     cp -a ../zfstools/lib/* "$ROOT/lib/"
+     cp -a ../zfstools/usr/* "$ROOT/usr/"
+ 
++    echo "install ntfs-3g Windows Server deduplication plugin"
++    install -D -m 0555 \
++        ../../ntfs-3g-dedup-plugin/.libs/ntfs-plugin-80000013.so \
++        "$ROOT/usr/lib/x86_64-linux-gnu/ntfs-3g/ntfs-plugin-80000013.so"
++
+     echo "cleanup unused data from base dependencies"
+     rm -rf ${ROOT:?}/usr/share # contains only docs and debian stuff
+     rm -rf ${ROOT:?}/usr/local/include # header files
+diff --git a/src/config-base b/src/config-base
+index fcebf07..eb0355e 100644
+--- a/src/config-base
++++ b/src/config-base
+@@ -149,9 +149,10 @@ CONFIG_NTFS3_FS_POSIX_ACL=y
+ CONFIG_NTFS3_FS_POSIX_ACL=y
+ CONFIG_MSDOS_FS=y
+ CONFIG_VFAT_FS=y
+ CONFIG_EXFAT_FS=y
+ CONFIG_EXFAT_DEFAULT_IOCHARSET="utf8"
++CONFIG_FUSE_FS=y
+ CONFIG_SQUASHFS=y
+ CONFIG_SQUASHFS_FILE_CACHE=y
+ CONFIG_SQUASHFS_COMPILE_DECOMP_SINGLE=y
+ CONFIG_SQUASHFS_XATTR=y

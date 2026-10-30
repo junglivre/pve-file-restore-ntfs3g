@@ -9,7 +9,10 @@ package=$(dpkg-deb -f "$deb" Package)
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 dpkg-deb -x "$deb" "$tmp"
+# Non-native packages ship changelog.Debian.gz; native ones (the restore
+# image) ship changelog.gz.
 changelog="$tmp/usr/share/doc/$package/changelog.Debian.gz"
+[ -f "$changelog" ] || changelog="$tmp/usr/share/doc/$package/changelog.gz"
 [ -f "$changelog" ] || { echo "missing compressed changelog in $deb" >&2; exit 1; }
 zgrep -qF 'Rebuild with the pve-file-restore-ntfs3g patch set.' "$changelog"
 echo "changelog check passed: $deb"

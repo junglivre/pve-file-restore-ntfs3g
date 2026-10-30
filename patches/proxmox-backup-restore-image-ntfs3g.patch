@@ -30,7 +30,7 @@ index 4c24be5..8437bf9 100644
                 python3,
                 rustc,
                 sphinx-common,
-@@ -42,6 +46,7 @@ Homepage: https://www.proxmox.com
+@@ -42,6 +46,8 @@ Homepage: https://www.proxmox.com
  Package: proxmox-backup-restore-image
  Architecture: amd64
  Recommends: proxmox-backup-file-restore,
@@ -39,36 +39,6 @@ index 4c24be5..8437bf9 100644
  Depends: ${misc:Depends},
  Breaks: proxmox-backup-file-restore (<< 3.4.2-1)
  Description: Kernel/initramfs images for Proxmox Backup single-file restore.
-diff --git a/src/Makefile b/src/Makefile
-index a198092..62df001 100644
---- a/src/Makefile
-+++ b/src/Makefile
-@@ -11,6 +11,7 @@ SHIM_DIR=init-shim-rs
- KERNEL_IMG=$(BUILDDIR)/bzImage
- INITRAMFS_IMG=$(INITRAMFS_BUILDDIR)/initramfs.img
- INITRAMFS_IMG_DBG=$(INITRAMFS_BUILDDIR)/initramfs-debug.img
-+DEDUP_PLUGIN=ntfs-3g-dedup-plugin/.libs/ntfs-plugin-80000013.so
- 
- ZFS_TOOLS=$(BUILDDIR)/zfstools
- 
-@@ -86,7 +87,16 @@ $(ZFS_TOOLS): zfs.prepared
- 	# absolute path required for 'make install'
- 	$(MAKE) -C $(BUILDDIR)/$(ZFSONLINUX_SUBMODULE) install DESTDIR=$(PWD)/$(ZFS_TOOLS)
- 
--$(INITRAMFS_IMG): $(BUILDDIR).prepared $(RUST_SRC) build_initramfs.sh $(ZFS_TOOLS)
-+.PHONY: dedup-plugin
-+dedup-plugin:
-+	mkdir -p build/pkgconfig
-+	ln -sf $$(pkg-config --variable=pcfiledir fuse3)/fuse3.pc build/pkgconfig/fuse.pc
-+	cd ntfs-3g-dedup-plugin; \
-+	    PKG_CONFIG_PATH=../build/pkgconfig:$$PKG_CONFIG_PATH autoreconf -fi && \
-+	    PKG_CONFIG_PATH=../build/pkgconfig:$$PKG_CONFIG_PATH ./configure && \
-+	    $(MAKE)
-+
-+$(INITRAMFS_IMG): $(BUILDDIR).prepared $(RUST_SRC) build_initramfs.sh $(ZFS_TOOLS) dedup-plugin
- 	cd $(SHIM_DIR); cargo build --release
- 	sh build_initramfs.sh
- 
 diff --git a/src/build_initramfs.sh b/src/build_initramfs.sh
 index 4e2445c..de550c9 100755
 --- a/src/build_initramfs.sh

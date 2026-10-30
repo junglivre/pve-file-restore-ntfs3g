@@ -12,7 +12,7 @@ index 37e1330d1..9d3fb988a 100644
  Standards-Version: 4.5.1
  Vcs-Git: git://git.proxmox.com/git/proxmox-backup.git
  Vcs-Browser: https://git.proxmox.com/?p=proxmox-backup.git;a=summary
-@@ -258,6 +259,7 @@ Package: proxmox-backup-file-restore
+@@ -258,6 +259,8 @@ Package: proxmox-backup-file-restore
  Architecture: any
  Depends: ${misc:Depends}, ${shlibs:Depends},
  Recommends: proxmox-backup-restore-image, pve-qemu-kvm (>= 5.0.0-9),
