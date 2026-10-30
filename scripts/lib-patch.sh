@@ -115,6 +115,27 @@ patch_apply_paths() {
     done
 }
 
+patch_select_paths_in_tree() {
+    local component=$1 destination=$2 requested=${3:-tip} candidate selected revision
+    local candidates=()
+    mapfile -t candidates < <(patch_selection_candidates "$component") || return 1
+    [ "${#candidates[@]}" -gt 0 ] || {
+        patch_error "$component has no patches"
+        return 1
+    }
+    revision=$(patch_revision "$component" "$requested") || return 1
+    for candidate in "${candidates[@]}"; do
+        if patch_apply_paths "$component" "$destination" "$candidate"; then
+            selected=$candidate
+            printf '%s\n' "$selected" || return 1
+            return 0
+        fi
+        git -C "$destination" reset --hard --quiet "$revision" || return 1
+        git -C "$destination" clean -fdq || return 1
+    done
+    patch_error "no patch selection applies for $component at $requested"
+}
+
 patch_apply_locked() {
     local component=$1 destination=$2 paths
     paths=$(lock_field "$component" patches) || return 1

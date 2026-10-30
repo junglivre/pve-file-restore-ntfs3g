@@ -10,7 +10,7 @@ cp -a "$ROOT/." "$SANDBOX"
 "$SANDBOX/scripts/lib-lock.sh" verify > "$TMP/verify.out"
 grep -qF 'upstream.lock verification passed' "$TMP/verify.out"
 
-sed -i '0,/sha256:[0-9a-f]/s//sha256:0/' "$SANDBOX/upstream.lock"
+sed -E -i '0,/sha256:[0-9a-f]+/s//sha256:deadbeef/' "$SANDBOX/upstream.lock"
 if "$SANDBOX/scripts/lib-lock.sh" verify > "$TMP/tampered.out" 2>&1; then
     echo 'tampered lock hash unexpectedly passed' >&2
     exit 1
@@ -44,7 +44,7 @@ grep -qF 'inputs hash mismatch' "$TMP/same-version.out"
 
 # A new version makes the same input change admissible after its lock hash is
 # refreshed by the helper.
-lock_update meta 2.1.5 - - -
+lock_update meta 2.1.7 - - -
 if "$SANDBOX/scripts/lib-lock.sh" verify --against HEAD > "$TMP/bumped.out" 2>&1; then
     :
 else

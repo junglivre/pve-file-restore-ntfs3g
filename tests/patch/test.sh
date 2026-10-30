@@ -106,6 +106,51 @@ if (cd "$SANDBOX" && scripts/check-patches.sh --tip >/dev/null 2>&1); then
     exit 1
 fi
 
+mkdir -p "$SANDBOX/patches/next"
+cat > "$SANDBOX/patches/first-adds.patch" <<'EOF'
+diff --git a/candidate.txt b/candidate.txt
+new file mode 100644
+--- /dev/null
++++ b/candidate.txt
+@@ -0,0 +1 @@
++stale
+EOF
+cat > "$SANDBOX/patches/second-fails.patch" <<'EOF'
+diff --git a/hello b/hello
+--- a/hello
++++ b/hello
+@@ -1 +1 @@
+-wrong
++bad
+EOF
+cat > "$SANDBOX/patches/next/first-adds.patch" <<'EOF'
+diff --git a/hello b/hello
+--- a/hello
++++ b/hello
+@@ -1 +1 @@
+-tip
++patched
+EOF
+cat > "$SANDBOX/patches/next/second-fails.patch" <<'EOF'
+diff --git a/hello b/hello
+--- a/hello
++++ b/hello
+@@ -1 +1 @@
+-patched
++final
+EOF
+lock_replace_line file-restore 1.0 "$base" patches/first-adds.patch,patches/second-fails.patch deadbeef "$upstream#master"
+clean_work="$TMP/clean"
+mkdir -p "$clean_work"
+patch_prepare_tree file-restore "$clean_work/source" "$tip"
+selected=$(patch_select_paths_in_tree file-restore "$clean_work/source" "$tip")
+grep -qx 'patches/next/first-adds.patch,patches/next/second-fails.patch' <<<"$selected"
+grep -qx 'final' "$clean_work/source/hello"
+if [ -e "$clean_work/source/candidate.txt" ]; then
+    echo 'failed candidate left an untracked file behind' >&2
+    exit 1
+fi
+
 plugin_upstream="$TMP/plugin-upstream"
 git init -q "$plugin_upstream"
 git -C "$plugin_upstream" config user.email test@example.invalid
