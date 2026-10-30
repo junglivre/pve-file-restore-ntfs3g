@@ -6,7 +6,26 @@ and asset contract.
 
 ## Unreleased
 
-### file-restore/4.2.8-1+ntfs3g2
+## file-restore/4.2.8-1+ntfs3g3
+
+- Version bump for the versioned daemon feature level and the fixed project
+  maintainer metadata.
+
+## restore-image/1.0.0+ntfs3g4
+
+- Version bump for the versioned restore-image feature level and the fixed
+  project maintainer metadata.
+
+## dedup-plugin/0+git20260721.885c77b-2
+
+- Version bump for the versioned dedup-plugin feature level.
+
+## meta/2.1.1
+
+- Requires the minimum daemon and restore-image feature levels as versioned
+  virtual package dependencies.
+
+## file-restore/4.2.8-1+ntfs3g2
 
 - Rebuilt on the exact upstream `proxmox-backup` 4.2.8-1 commit (`78f77d5`).
 - The daemon remounts a deduplicated NTFS volume with `ntfs-3g` after an
@@ -18,19 +37,19 @@ and asset contract.
 - The patched source package uses the project maintainer identity and records
   Proxmox as `XSBC-Original-Maintainer`.
 
-### restore-image/1.0.0+ntfs3g3
+## restore-image/1.0.0+ntfs3g3
 
 - Rebuilt on the exact upstream restore-image 1.0.0 commit (`c0b6cd8`).
 - The image build explicitly depends on `libfuse3-dev`; the generated image
   includes FUSE, `ntfs-3g`, `libfuse3`, and `ntfs-plugin-80000013.so`.
 - Debian changelog and maintainer handling match `file-restore`.
 
-### dedup-plugin/0+git20260721.885c77b-1
+## dedup-plugin/0+git20260721.885c77b-1
 
 - The standalone plugin package version now sorts newer than the prior
   `0~git...` pre-release and installs the FUSE 3 dedup plugin on Debian 13.
 
-### meta/2.1.0
+## meta/2.1.0
 
 - `pve-file-restore-ntfs3g-check --json` now reports
   `file_restore.dedup_remount`, emits JSON `null` for an absent package, and

@@ -38,8 +38,8 @@ if grep -qF '"null"' "$TMP/missing.json"; then
   exit 1
 fi
 
-export FILE_RESTORE_VERSION='4.2.8-1+ntfs3g2'
-export RESTORE_IMAGE_VERSION='1.0.0+ntfs3g3'
+export FILE_RESTORE_VERSION='4.2.8-1+ntfs3g3'
+export RESTORE_IMAGE_VERSION='1.0.0+ntfs3g4'
 printf '%s\0%s\0' 'try FUSE mount using ntfs-3g' 'remounting with ntfs-3g' \
   > "$TREE/usr/lib/x86_64-linux-gnu/proxmox-backup/file-restore/proxmox-restore-daemon"
 : > "$TREE/usr/lib/x86_64-linux-gnu/proxmox-backup/file-restore/initramfs.img"

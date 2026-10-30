@@ -33,105 +33,18 @@ jobs:
       - id: filter
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = pull_request ]; then
-            base="${{ github.event.pull_request.base.sha }}"
-          else
+          base="${{ github.event.pull_request.base.sha }}"
+          if [ -z "$base" ]; then
             base="${{ github.event.before }}"
           fi
-
-          file_restore=false
-          restore_image=false
-          dedup_plugin=false
-          meta=false
-          smoke=false
-          fixture=false
-          all_builds=false
-          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
-            all_builds=true
-            smoke=true
-            fixture=true
-            changed='first run'
-            lock_diff=''
-          else
-            changed=$(git diff --name-only "$base" HEAD -- \
-              .github/workflows/build.yml upstream.lock patches/ packaging/ scripts/ tests/ || true)
-            lock_diff=$(git diff "$base" HEAD -- upstream.lock || true)
-          fi
-          echo 'changed files:'
-          echo "$changed"
-
-          lock_changed() {
-            grep -qE "^[+-]$1[[:space:]]" <<<"$lock_diff"
-          }
-          if grep -qE '^scripts/.*\.sh$' <<<"$changed"; then
-            all_builds=true
-          fi
-          if grep -qF '.github/workflows/build.yml' <<<"$changed"; then
-            all_builds=true
-            smoke=true
-            fixture=true
-          fi
-          if grep -qE '^tests/smoke/' <<<"$changed"; then
-            smoke=true
-          fi
-          if grep -qE '^tests/fixture/' <<<"$changed"; then
-            fixture=true
-          fi
-          if grep -qE '^tests/artifacts/' <<<"$changed"; then
-            smoke=true
-            fixture=true
-          fi
-
-          if [ "$all_builds" = true ] || lock_changed file-restore \
-              || grep -qF 'patches/proxmox-backup-ntfs3g-fallback.patch' <<<"$changed"; then
-            file_restore=true
-          fi
-          if [ "$all_builds" = true ] || lock_changed dedup-plugin \
-              || grep -qF 'patches/ntfs-3g-dedup-plugin-fuse3.patch' <<<"$changed" \
-              || grep -qF 'packaging/ntfs-3g-plugin-dedup/' <<<"$changed"; then
-            dedup_plugin=true
-          fi
-          if [ "$all_builds" = true ] || lock_changed restore-image \
-              || grep -qF 'patches/proxmox-backup-restore-image-ntfs3g.patch' <<<"$changed"; then
-            restore_image=true
-          fi
-          if [ "$all_builds" = true ] || lock_changed meta \
-              || grep -qF 'packaging/pve-file-restore-ntfs3g/' <<<"$changed"; then
-            meta=true
-          fi
-
-          # The image build consumes the plugin and the fixture proof needs the
-          # exact plugin package available to this run.
-          if [ "$restore_image" = true ]; then
-            dedup_plugin=true
-          fi
-          if [ "$file_restore" = true ] || [ "$restore_image" = true ]; then
-            smoke=true
-          fi
-          if [ "$dedup_plugin" = true ]; then
-            fixture=true
-          fi
-          heavy=false
-          if [ "$file_restore" = true ] || [ "$restore_image" = true ] \
-              || [ "$dedup_plugin" = true ] || [ "$meta" = true ] \
-              || [ "$smoke" = true ] || [ "$fixture" = true ]; then
-            heavy=true
-          fi
-
-          {
-            printf 'file-restore=%s\n' "$file_restore"
-            printf 'restore-image=%s\n' "$restore_image"
-            printf 'dedup-plugin=%s\n' "$dedup_plugin"
-            printf 'meta=%s\n' "$meta"
-            printf 'smoke=%s\n' "$smoke"
-            printf 'fixture=%s\n' "$fixture"
-            printf 'heavy=%s\n' "$heavy"
-          } >>"$GITHUB_OUTPUT"
+          scripts/lib-lock.sh changes --base "$base" >>"$GITHUB_OUTPUT"
 
   checks:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
       - name: Install pinned lint tools
         run: |
           set -euo pipefail
@@ -165,7 +78,19 @@ jobs:
           shellcheck --version
           actionlint -version
       - name: Run all offline tests and lint
-        run: tests/run-all.sh
+        run: |
+          set -euo pipefail
+          base="${{ github.event.pull_request.base.sha }}"
+          if [ -z "$base" ]; then
+            base="${{ github.event.before }}"
+          fi
+          if [ -z "$base" ] || [ "$base" = '0000000000000000000000000000000000000000' ]; then
+            echo 'CI base SHA is unavailable; cannot verify version bumps against the base' >&2
+            exit 1
+          fi
+          git fetch --no-tags origin "$base"
+          git rev-parse --verify "$base^{commit}" >/dev/null
+          tests/run-all.sh --base "$base"
 
   build-file-restore:
     needs: changes
@@ -186,8 +111,6 @@ jobs:
           PROJECT_DIR: ${{ github.workspace }}
           WORK_DIR: ${{ github.workspace }}/.build
           OUTPUT_DIR: ${{ github.workspace }}/dist
-          DEBFULLNAME: ${{ vars.DEBFULLNAME }}
-          DEBEMAIL: ${{ vars.DEBEMAIL }}
         run: bash scripts/build-in-container.sh 2>&1 | tee build-file-restore.log
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -210,8 +133,6 @@ jobs:
         env:
           WORK_DIR: ${{ github.workspace }}/.build
           OUTPUT_DIR: ${{ github.workspace }}/dist
-          DEBFULLNAME: ${{ vars.DEBFULLNAME }}
-          DEBEMAIL: ${{ vars.DEBEMAIL }}
         run: ./scripts/build.sh --component restore-image 2>&1 | tee build-restore-image.log
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

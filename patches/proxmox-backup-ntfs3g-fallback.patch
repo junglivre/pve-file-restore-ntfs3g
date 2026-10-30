@@ -7,7 +7,7 @@ index 37e1330d1..9d3fb988a 100644
                 uuid-dev,
                 xindy <!nodoc>,
 -Maintainer: Proxmox Support Team <support@proxmox.com>
-+Maintainer: pve-file-restore-ntfs3g <noreply@pve-file-restore-ntfs3g.invalid>
++Maintainer: junglivre <junglivre@users.noreply.github.com>
 +XSBC-Original-Maintainer: Proxmox Support Team <support@proxmox.com>
  Standards-Version: 4.5.1
  Vcs-Git: git://git.proxmox.com/git/proxmox-backup.git
@@ -17,6 +17,7 @@ index 37e1330d1..9d3fb988a 100644
  Depends: ${misc:Depends}, ${shlibs:Depends},
  Recommends: proxmox-backup-restore-image, pve-qemu-kvm (>= 5.0.0-9),
 +Provides: proxmox-backup-file-restore-ntfs3g (= ${binary:Version}),
++ pve-file-restore-ntfs3g-daemon (= 2),
  Breaks: proxmox-backup-restore-image (<< 0.3.1),
  Description: Proxmox Backup single file restore tools for pxar and block device backups
   This package contains the Proxmox Backup single file restore client for

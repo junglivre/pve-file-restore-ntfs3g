@@ -1,14 +1,16 @@
 name: release
 
-# A change to upstream.lock on master means a component got a new version:
-# build everything (build.yml) and publish a pre-release (= testing channel)
-# per component, tagged <component>/<version>. Promotion to stable is a
-# separate, approval-gated workflow (promote.yml).
+# Build on lock changes and publish immutable testing releases. Promotion is a
+# separate approval-gated workflow (promote.yml).
 on:
   push:
     branches: [master]
     paths: [upstream.lock]
   workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -24,7 +26,6 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
-      issues: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Download build artifacts
@@ -34,66 +35,32 @@ jobs:
       - name: Publish pre-releases
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: scripts/release.sh artifacts
+
+  release-failure:
+    needs: [build, release]
+    if: >-
+      always() && (needs.build.result == 'failure' || needs.release.result == 'failure')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Comment on the release-failure tracking issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          # shellcheck source=lib-lock.sh
-          source scripts/lib-lock.sh
-
-          changelog_section() {
-            local tag=$1
-            awk -v tag="### $tag" '
-              index($0, tag) == 1 { capture = 1; next }
-              capture && /^(###|##) / { exit }
-              capture { print }
-            ' CHANGELOG.md
-          }
-
-          declare -A DEB_OF=(
-            [file-restore]=proxmox-backup-file-restore
-            [restore-image]=proxmox-backup-restore-image
-            [dedup-plugin]=ntfs-3g-plugin-dedup
-            [meta]=pve-file-restore-ntfs3g
-          )
-
-          published=()
-          for component in file-restore restore-image dedup-plugin meta; do
-            deb=$(find "artifacts/$component" -name "${DEB_OF[$component]}_*.deb" 2>/dev/null | head -1 || true)
-            [ -n "$deb" ] || { echo ":: $component: no build artifact, skipping"; continue; }
-
-            version=$(lock_field "$component" version)
-            commit=$(lock_field "$component" commit)
-            tag="$component/$version"
-
-            if gh release view "$tag" >/dev/null 2>&1; then
-              echo ":: $tag already exists, skipping (releases are immutable; a fix is a new version)"
-              continue
-            fi
-
-            work=$(mktemp -d)
-            notes=$(mktemp)
-            cp "$deb" "$work/"
-            (cd "$work" && sha256sum -- *.deb > SHA256SUMS)
-            {
-              changelog_section "$tag"
-              echo
-              echo "Upstream commit: \`$commit\`"
-              echo "Verify the attached package with \`sha256sum -c SHA256SUMS\`."
-            } > "$notes"
-
-            # Only the package and checksum are release assets; the release
-            # description is supplied out of band and cannot be downloaded.
-            gh release create "$tag" --prerelease --target "${{ github.sha }}" \
-              --title "$tag" --notes-file "$notes" "$work"/*.deb "$work/SHA256SUMS"
-            published+=("$tag")
-            rm -f "$notes"
-            rm -rf "$work"
-          done
-
-          if [ "${#published[@]}" -gt 0 ]; then
-            tags_csv=$(printf '%s, ' "${published[@]}" | sed 's/, $//')
-            body=$(printf "Pre-releases (testing channel): %s.\n\nTest them on the lab cluster (\`scripts/cluster-install.sh --channel testing\`), then promote each tag to stable with the promote workflow (requires approval)." "$tags_csv")
-            gh issue create \
-              --title "pre-release published: ${published[*]}" \
-              --body "$body" \
-              || true
+          body=$(printf 'Release workflow failed for commit %s. Inspect the failed build/release jobs.' "$RELEASE_SHA")
+          issue=$(gh issue list --repo "$GH_REPO" --state open --label release-failure \
+            --json number --jq '.[0].number')
+          if [ -n "$issue" ]; then
+            gh issue comment "$issue" --repo "$GH_REPO" --body "$body"
+          else
+            gh label create release-failure --repo "$GH_REPO" --force
+            gh issue create --repo "$GH_REPO" --title 'Release failure tracking' \
+              --label release-failure --body "$body"
           fi

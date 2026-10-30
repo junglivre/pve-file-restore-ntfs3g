@@ -7,8 +7,12 @@
 # CI (see .github/workflows/build.yml).
 set -Eeuo pipefail
 
-# debian:13, pinned by digest for reproducible builds.
-BUILD_IMAGE='debian:13@sha256:4c25275446ca371766b8b093c696782eabce06263fccacb8d5d813b3dc44b308'
+# shellcheck source=./scripts/lib-lock.sh
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib-lock.sh"
+
+# The image digest is kept in lib-lock.sh so the lock hash and the build use
+# exactly the same container identity.
+BUILD_IMAGE=$LOCK_BUILD_IMAGE
 
 usage() {
     echo "usage: $0 --component <file-restore|restore-image|dedup-plugin|meta|all>" >&2
@@ -37,6 +41,9 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 
 mkdir -p "$OUTPUT_DIR" "$WORK_DIR"
+# A component build must never select a stale package or checksum from a
+# previous component build.
+find "$OUTPUT_DIR" -maxdepth 1 -type f \( -name '*.deb' -o -name SHA256SUMS \) -delete
 
 docker run --rm --init \
     --mount "type=bind,src=$ROOT_DIR,dst=/project,readonly" \

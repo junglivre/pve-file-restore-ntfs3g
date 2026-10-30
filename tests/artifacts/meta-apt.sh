@@ -72,8 +72,8 @@ if (cd / && apt-get install -y --no-install-recommends "$meta") >"$negative_log"
     echo 'metapackage installed with only official packages' >&2
     exit 1
 fi
-grep -qF 'proxmox-backup-file-restore-ntfs3g' "$negative_log"
-grep -qF 'proxmox-backup-restore-image-ntfs3g' "$negative_log"
+grep -qF 'pve-file-restore-ntfs3g-daemon' "$negative_log"
+grep -qF 'pve-file-restore-ntfs3g-image' "$negative_log"
 echo 'meta negative dependency check passed: both virtual package names were unmet'
 
 cat >>/etc/apt/sources.list.d/local-apt-test.list <<EOF

@@ -4,6 +4,7 @@ Section: admin
 Priority: optional
 Architecture: amd64
 Maintainer: junglivre <junglivre@users.noreply.github.com>
+Provides: pve-file-restore-ntfs3g-plugin (= 1)
 Depends: ntfs-3g
 Description: Windows Server Data Deduplication plugin for ntfs-3g
  Read-only ntfs-3g plugin for the Windows Server Data Deduplication reparse

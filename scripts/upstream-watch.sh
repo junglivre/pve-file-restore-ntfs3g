@@ -16,7 +16,7 @@ PUSH=${PUSH:-0}
 DRY_RUN=${DRY_RUN:-0}
 SIMULATE_FROM=${SIMULATE_FROM:-}
 PACKAGES_URL='http://download.proxmox.com/debian/pve/dists/trixie/pve-no-subscription/binary-amd64/Packages.gz'
-DEDUP_REPO='https://github.com/smx-smx/ntfs-3g-dedup-plugin.git'
+DEDUP_REPO=$(lock_source_url dedup-plugin)
 RUN_DATE=${RUN_DATE:-$(date -u +%F)}
 BRANCH="auto/$RUN_DATE"
 declare -a UPDATES=()
@@ -70,19 +70,8 @@ upstream_version_of() {
 }
 
 write_lock_line() {
-    local component=$1 version=$2 commit=$3 rev=$4 patch_hash=$5
-    python3 - "$component" "$version" "$commit" "$rev" "$patch_hash" <<'EOF'
-import re, sys
-component, version, commit, rev, patch_hash = sys.argv[1:]
-with open('upstream.lock') as f:
-    lines = f.readlines()
-with open('upstream.lock', 'w') as f:
-    for line in lines:
-        if re.match(rf'^{re.escape(component)}\s', line):
-            f.write(f"{component:<14} {version:<29} {commit:<41} {rev:<8} {patch_hash}\n")
-        else:
-            f.write(line)
-EOF
+    local component=$1 version=$2 commit=$3 patches=$4 source=$5
+    lock_update "$component" "$version" "$commit" "$patches" "$source"
 }
 
 queue_component_bump() {
@@ -138,15 +127,16 @@ queue_component_bump() {
         return 0
     fi
 
-    local version="${new_upstream}+ntfs3g1" hash
-    hash="sha256:$(sha256sum "$patch_file" | awk '{print $1}')"
-    write_lock_line "$component" "$version" "$commit" ntfs3g1 "$hash"
+    local version="${new_upstream}+ntfs3g1" patches source
+    patches=$(lock_field "$component" patches)
+    source=$(lock_field "$component" source)
+    write_lock_line "$component" "$version" "$commit" "$patches" "$source"
     UPDATES+=("$component $version")
     log "$component: queued $version ($commit)"
 }
 
 queue_dedup_bump() {
-    local head current tmp date short version hash
+    local head current tmp date short version patches source
     head=$(git ls-remote "$DEDUP_REPO" refs/heads/main | awk '{print $1}')
     [ -n "$head" ] || { echo "cannot resolve dedup plugin main" >&2; return 1; }
     current=$(lock_field dedup-plugin commit)
@@ -182,21 +172,23 @@ queue_dedup_bump() {
     date=$(git -C "$tmp/src" log -1 --format='%cs' | tr -d -)
     short=${head:0:7}
     version="0+git${date}.${short}-1"
-    hash="sha256:$(sha256sum patches/ntfs-3g-dedup-plugin-fuse3.patch | awk '{print $1}')"
-    write_lock_line dedup-plugin "$version" "$head" 1 "$hash"
+    patches=$(lock_field dedup-plugin patches)
+    source=$(lock_field dedup-plugin source)
+    write_lock_line dedup-plugin "$version" "$head" "$patches" "$source"
     UPDATES+=("dedup-plugin $version")
 
     # A changed embedded plugin changes the restore image even when its
     # upstream source did not move. Bump its patch revision in the same PR.
-    local restore_version restore_upstream restore_rev restore_commit restore_hash next
+    local restore_version restore_upstream restore_rev restore_commit restore_patches restore_source next
     restore_version=$(lock_field restore-image version)
     restore_upstream=${restore_version%%+ntfs3g*}
     restore_rev=$(lock_field restore-image rev)
     next=$(( ${restore_rev#ntfs3g} + 1 ))
     restore_commit=$(lock_field restore-image commit)
-    restore_hash=$(lock_field restore-image patches_sha256)
+    restore_patches=$(lock_field restore-image patches)
+    restore_source=$(lock_field restore-image source)
     write_lock_line restore-image "${restore_upstream}+ntfs3g${next}" "$restore_commit" \
-        "ntfs3g${next}" "sha256:$restore_hash"
+        "$restore_patches" "$restore_source"
     UPDATES+=("restore-image ${restore_upstream}+ntfs3g${next} (embedded dedup plugin)")
     log "dedup-plugin: queued $version ($head)"
 }

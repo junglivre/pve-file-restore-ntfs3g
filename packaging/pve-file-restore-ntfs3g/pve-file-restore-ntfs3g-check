@@ -10,9 +10,9 @@
 # changes with a new version of this package and a CHANGELOG.md entry:
 #
 #   {"ok": true,
-#    "file_restore": {"version": "4.2.8-1+ntfs3g2", "patched": true,
+#    "file_restore": {"version": "4.2.8-1+ntfs3g3", "patched": true,
 #                     "dedup_remount": true},
-#    "restore_image": {"version": "1.0.0+ntfs3g3", "ntfs3g": true,
+#    "restore_image": {"version": "1.0.0+ntfs3g4", "ntfs3g": true,
 #                      "dedup_plugin": true},
 #    "initramfs_cache_fresh": true}
 set -Eeuo pipefail

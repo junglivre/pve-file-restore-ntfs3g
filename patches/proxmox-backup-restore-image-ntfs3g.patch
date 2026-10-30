@@ -7,7 +7,7 @@ index 4c24be5..8437bf9 100644
  Section: admin
  Priority: optional
 -Maintainer: Proxmox Support Team <support@proxmox.com>
-+Maintainer: pve-file-restore-ntfs3g <noreply@pve-file-restore-ntfs3g.invalid>
++Maintainer: junglivre <junglivre@users.noreply.github.com>
 +XSBC-Original-Maintainer: Proxmox Support Team <support@proxmox.com>
  Build-Depends: apt-rdepends,
                 asciidoc-base,
@@ -35,6 +35,7 @@ index 4c24be5..8437bf9 100644
  Architecture: amd64
  Recommends: proxmox-backup-file-restore,
 +Provides: proxmox-backup-restore-image-ntfs3g (= ${binary:Version}),
++ pve-file-restore-ntfs3g-image (= 3),
  Depends: ${misc:Depends},
  Breaks: proxmox-backup-file-restore (<< 3.4.2-1)
  Description: Kernel/initramfs images for Proxmox Backup single-file restore.

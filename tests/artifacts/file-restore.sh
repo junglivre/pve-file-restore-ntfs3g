@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+# shellcheck source=./tests/artifacts/lib.sh
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
+
 [ "$#" -eq 1 ] || { echo "usage: $0 <file-restore.deb>" >&2; exit 2; }
 deb=$1
 [ -f "$deb" ] || { echo "package not found: $deb" >&2; exit 1; }
 
-control=$(dpkg-deb -I "$deb")
-grep -qF 'Provides: proxmox-backup-file-restore-ntfs3g' <<<"$control"
-grep -qF 'Maintainer: pve-file-restore-ntfs3g' <<<"$control"
+version=$(dpkg-deb -f "$deb" Version)
+deb_relation_has "$deb" Provides "proxmox-backup-file-restore-ntfs3g (= $version)"
+deb_relation_has "$deb" Provides 'pve-file-restore-ntfs3g-daemon (= 2)'
+grep -qF 'Maintainer: junglivre <junglivre@users.noreply.github.com>' < <(dpkg-deb -I "$deb")
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT

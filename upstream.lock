@@ -2,7 +2,7 @@
 #
 # One line per component (fields separated by whitespace):
 #
-#   <component>  <package version>  <upstream commit>  <patch revision>  <patches sha256>
+#   <component>  <package version>  <upstream commit>  <patches>  <inputs sha256>  <source>
 #
 # - package version: exact upstream version + our "+ntfs3g<N>" suffix (D6), or
 #   the package's own version for dedup-plugin and meta.
@@ -11,15 +11,15 @@
 #   titled "bump version to <upstream version>" (find it with
 #   scripts/resolve-upstream.sh); never a master tip. For dedup-plugin it is
 #   the pinned commit of smx-smx/ntfs-3g-dedup-plugin.
-# - patch revision: our patch revision on that upstream version. It goes up
-#   when our patch changes and resets to ntfs3g1 on every new upstream
-#   version. For dedup-plugin and meta it is the Debian revision.
-# - patches sha256: sha256 of the patch file(s) applied to that component
-#   ("-" when there are none). CI keys its build caches on this.
+# - patches: comma-separated repo-relative patch paths applied in that order,
+#   or "-" when there are none.
+# - inputs sha256: hash of all tracked inputs that shape the package, as listed
+#   by scripts/lib-lock.sh.
+# - source: upstream git URL and ref separated by the last "#".
 #
 # Debian ordering guarantee: 4.2.8-1 < 4.2.8-1+ntfs3g1 < 4.2.8-2. No epoch.
 
-file-restore   4.2.8-1+ntfs3g2            78f77d53718b351bebacfa4f56f85134616e0b02  ntfs3g2  sha256:3974aba37a3c9f2e5eee203b6f60b3659f6bc796192ed90ea6f05485b2aec6d5
-restore-image  1.0.0+ntfs3g3              c0b6cd89dab2cc4e02945b5e211d17fc9897a57a  ntfs3g3  sha256:173b3793995d2bdbdbe3b061e33844c82154202e0e139f6938bc51c4ded066c1
-dedup-plugin   0+git20260721.885c77b-1    885c77ba8b89a75976345dbd4f06d3c39fbd3e31  1        sha256:76140ba270ccc7cbbfb9796cec6377c4e31a15d45b8e7789cd03c98cb7d4b773
-meta           2.1.0                      -                                          -        -
+file-restore   4.2.8-1+ntfs3g3            78f77d53718b351bebacfa4f56f85134616e0b02  patches/proxmox-backup-ntfs3g-fallback.patch  sha256:87b4ec098aa5e766ebcc9e4d645922996be292d46096ee85365d98ebe1b6d8ad  https://git.proxmox.com/git/proxmox-backup.git#master
+restore-image  1.0.0+ntfs3g4              c0b6cd89dab2cc4e02945b5e211d17fc9897a57a  patches/proxmox-backup-restore-image-ntfs3g.patch,patches/ntfs-3g-dedup-plugin-fuse3.patch  sha256:c3845bfe175b19f474e61bde1277df9c017529bf0cdc06da742d08df534804a4  https://git.proxmox.com/git/proxmox-backup-restore-image.git#master
+dedup-plugin   0+git20260721.885c77b-2    885c77ba8b89a75976345dbd4f06d3c39fbd3e31  patches/ntfs-3g-dedup-plugin-fuse3.patch  sha256:b9d6aba5e869a98550ce13caee98cf11c17846aed9b91a8de03ff50abd448251  https://github.com/smx-smx/ntfs-3g-dedup-plugin.git#refs/pull/1/head
+meta           2.1.1                      -                                          -  sha256:f54bbc3928ddb4878305ab82195d37d095d53e54fb1d4099b1d4c42c46a771a6  -
