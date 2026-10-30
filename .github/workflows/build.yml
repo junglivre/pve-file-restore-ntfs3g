@@ -1,10 +1,14 @@
 name: build
 
-# Builds (and tests) exactly the components that changed in upstream.lock,
-# patches/ or packaging/. Also called by release.yml.
+# Builds the components whose inputs changed and always runs the complete
+# offline test and lint suite. Also called by release.yml.
 on:
   pull_request:
   workflow_call:
+
+defaults:
+  run:
+    shell: bash
 
 permissions:
   contents: read
@@ -17,6 +21,9 @@ jobs:
       restore-image: ${{ steps.filter.outputs.restore-image }}
       dedup-plugin: ${{ steps.filter.outputs.dedup-plugin }}
       meta: ${{ steps.filter.outputs.meta }}
+      smoke: ${{ steps.filter.outputs.smoke }}
+      fixture: ${{ steps.filter.outputs.fixture }}
+      heavy: ${{ steps.filter.outputs.heavy }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -31,42 +38,134 @@ jobs:
           else
             base="${{ github.event.before }}"
           fi
-          # A reusable call without a push base builds every component.
-          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ] \
-              || [ "${{ github.event_name }}" = workflow_call ]; then
-            echo "file-restore=true"  >> "$GITHUB_OUTPUT"
-            echo "restore-image=true" >> "$GITHUB_OUTPUT"
-            echo "dedup-plugin=true"  >> "$GITHUB_OUTPUT"
-            echo "meta=true"          >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          changed=$(git diff --name-only "$base" HEAD -- upstream.lock patches/ packaging/ scripts/ tests/ || true)
-          echo "changed files:"; echo "$changed"
-          lock_changed() {
-            git diff "$base" HEAD -- upstream.lock | grep -qE "^[+-]$1[[:space:]]"
-          }
-          common=false
-          if grep -qE '^scripts/(build\.sh|build-in-container\.sh|lib-lock\.sh)$' <<<"$changed"; then
-            common=true
-          fi
+
           file_restore=false
           restore_image=false
           dedup_plugin=false
           meta=false
-          { $common || lock_changed file-restore || grep -qF 'patches/proxmox-backup-ntfs3g-fallback.patch' <<<"$changed"; } && file_restore=true
-          { $common || lock_changed dedup-plugin || grep -qF 'patches/ntfs-3g-dedup-plugin-fuse3.patch' <<<"$changed"; } && dedup_plugin=true
-          # The plugin is embedded in the restore image, so its lock update
-          # must rebuild that image even if the image source pin is unchanged.
-          { $common || lock_changed restore-image || $dedup_plugin || grep -qF 'patches/proxmox-backup-restore-image-ntfs3g.patch' <<<"$changed"; } && restore_image=true
-          # Boot smoke injects the freshly built daemon into a changed restore
-          # image, so an image build also needs the matching daemon artifact.
-          $restore_image && file_restore=true
+          smoke=false
+          fixture=false
+          all_builds=false
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            all_builds=true
+            smoke=true
+            fixture=true
+            changed='first run'
+            lock_diff=''
+          else
+            changed=$(git diff --name-only "$base" HEAD -- \
+              .github/workflows/build.yml upstream.lock patches/ packaging/ scripts/ tests/ || true)
+            lock_diff=$(git diff "$base" HEAD -- upstream.lock || true)
+          fi
+          echo 'changed files:'
+          echo "$changed"
 
-          { $common || lock_changed meta || grep -qF 'packaging/pve-file-restore-ntfs3g/' <<<"$changed"; } && meta=true
-          echo "file-restore=$file_restore" >> "$GITHUB_OUTPUT"
-          echo "restore-image=$restore_image" >> "$GITHUB_OUTPUT"
-          echo "dedup-plugin=$dedup_plugin" >> "$GITHUB_OUTPUT"
-          echo "meta=$meta" >> "$GITHUB_OUTPUT"
+          lock_changed() {
+            grep -qE "^[+-]$1[[:space:]]" <<<"$lock_diff"
+          }
+          if grep -qE '^scripts/.*\.sh$' <<<"$changed"; then
+            all_builds=true
+          fi
+          if grep -qF '.github/workflows/build.yml' <<<"$changed"; then
+            all_builds=true
+            smoke=true
+            fixture=true
+          fi
+          if grep -qE '^tests/smoke/' <<<"$changed"; then
+            smoke=true
+          fi
+          if grep -qE '^tests/fixture/' <<<"$changed"; then
+            fixture=true
+          fi
+          if grep -qE '^tests/artifacts/' <<<"$changed"; then
+            smoke=true
+            fixture=true
+          fi
+
+          if [ "$all_builds" = true ] || lock_changed file-restore \
+              || grep -qF 'patches/proxmox-backup-ntfs3g-fallback.patch' <<<"$changed"; then
+            file_restore=true
+          fi
+          if [ "$all_builds" = true ] || lock_changed dedup-plugin \
+              || grep -qF 'patches/ntfs-3g-dedup-plugin-fuse3.patch' <<<"$changed" \
+              || grep -qF 'packaging/ntfs-3g-plugin-dedup/' <<<"$changed"; then
+            dedup_plugin=true
+          fi
+          if [ "$all_builds" = true ] || lock_changed restore-image \
+              || grep -qF 'patches/proxmox-backup-restore-image-ntfs3g.patch' <<<"$changed"; then
+            restore_image=true
+          fi
+          if [ "$all_builds" = true ] || lock_changed meta \
+              || grep -qF 'packaging/pve-file-restore-ntfs3g/' <<<"$changed"; then
+            meta=true
+          fi
+
+          # The image build consumes the plugin and the fixture proof needs the
+          # exact plugin package available to this run.
+          if [ "$restore_image" = true ]; then
+            dedup_plugin=true
+          fi
+          if [ "$file_restore" = true ] || [ "$restore_image" = true ]; then
+            smoke=true
+          fi
+          if [ "$dedup_plugin" = true ]; then
+            fixture=true
+          fi
+          heavy=false
+          if [ "$file_restore" = true ] || [ "$restore_image" = true ] \
+              || [ "$dedup_plugin" = true ] || [ "$meta" = true ] \
+              || [ "$smoke" = true ] || [ "$fixture" = true ]; then
+            heavy=true
+          fi
+
+          {
+            printf 'file-restore=%s\n' "$file_restore"
+            printf 'restore-image=%s\n' "$restore_image"
+            printf 'dedup-plugin=%s\n' "$dedup_plugin"
+            printf 'meta=%s\n' "$meta"
+            printf 'smoke=%s\n' "$smoke"
+            printf 'fixture=%s\n' "$fixture"
+            printf 'heavy=%s\n' "$heavy"
+          } >>"$GITHUB_OUTPUT"
+
+  checks:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install pinned lint tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends curl xz-utils
+          tmp=$(mktemp -d)
+          curl -fsSL \
+            https://github.com/koalaman/shellcheck/releases/download/v0.10.0/shellcheck-v0.10.0.linux.x86_64.tar.xz \
+            -o "$tmp/shellcheck.tar.xz"
+          shellcheck_sha256=6c881ab0698e4e6ea235245f22832860544f17ba386442fe7e9d629f8cbedf87
+          shellcheck_actual=$(sha256sum "$tmp/shellcheck.tar.xz")
+          shellcheck_actual=${shellcheck_actual%% *}
+          [ "$shellcheck_actual" = "$shellcheck_sha256" ] || {
+            echo 'shellcheck archive checksum mismatch' >&2
+            exit 1
+          }
+          tar -xJf "$tmp/shellcheck.tar.xz" -C "$tmp"
+          sudo install -m 0755 "$tmp/shellcheck-v0.10.0/shellcheck" /usr/local/bin/shellcheck
+          curl -fsSL \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz \
+            -o "$tmp/actionlint.tar.gz"
+          actionlint_sha256=023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757
+          actionlint_actual=$(sha256sum "$tmp/actionlint.tar.gz")
+          actionlint_actual=${actionlint_actual%% *}
+          [ "$actionlint_actual" = "$actionlint_sha256" ] || {
+            echo 'actionlint archive checksum mismatch' >&2
+            exit 1
+          }
+          tar -xzf "$tmp/actionlint.tar.gz" -C "$tmp"
+          sudo install -m 0755 "$tmp/actionlint" /usr/local/bin/actionlint
+          shellcheck --version
+          actionlint -version
+      - name: Run all offline tests and lint
+        run: tests/run-all.sh
 
   build-file-restore:
     needs: changes
@@ -89,9 +188,7 @@ jobs:
           OUTPUT_DIR: ${{ github.workspace }}/dist
           DEBFULLNAME: ${{ vars.DEBFULLNAME }}
           DEBEMAIL: ${{ vars.DEBEMAIL }}
-        run: |
-          set -euo pipefail
-          bash scripts/build-in-container.sh 2>&1 | tee build-file-restore.log
+        run: bash scripts/build-in-container.sh 2>&1 | tee build-file-restore.log
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: file-restore
@@ -109,35 +206,19 @@ jobs:
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Free disk space
-        run: |
-          df -h
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache
-          df -h
-      - name: Use /mnt for work and docker data
-        run: |
-          sudo mkdir -p /mnt/work /mnt/docker-data /mnt/dist
-          sudo chown -R "$USER:$USER" /mnt/work /mnt/dist
-          echo 'WORK_DIR=/mnt/work' >> "$GITHUB_ENV"
-          echo 'OUTPUT_DIR=/mnt/dist' >> "$GITHUB_ENV"
-          sudo sh -c 'printf "{\"data-root\": \"/mnt/docker-data\"}" > /etc/docker/daemon.json'
-          sudo systemctl restart docker
-          df -h /mnt
       - name: Build proxmox-backup-restore-image
         env:
+          WORK_DIR: ${{ github.workspace }}/.build
+          OUTPUT_DIR: ${{ github.workspace }}/dist
           DEBFULLNAME: ${{ vars.DEBFULLNAME }}
           DEBEMAIL: ${{ vars.DEBEMAIL }}
-        run: |
-          set -euo pipefail
-          ./scripts/build.sh --component restore-image 2>&1 | tee build-restore-image.log
-      - name: Disk usage after build
-        run: df -h
+        run: ./scripts/build.sh --component restore-image 2>&1 | tee build-restore-image.log
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: restore-image
           path: |
-            /mnt/dist/*.deb
-            /mnt/dist/SHA256SUMS
+            dist/*.deb
+            dist/SHA256SUMS
             build-restore-image.log
           if-no-files-found: error
           retention-days: 30
@@ -149,9 +230,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Build ntfs-3g-plugin-dedup
-        run: |
-          set -euo pipefail
-          ./scripts/build.sh --component dedup-plugin 2>&1 | tee build-dedup-plugin.log
+        run: ./scripts/build.sh --component dedup-plugin 2>&1 | tee build-dedup-plugin.log
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: dedup-plugin
@@ -169,9 +248,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Build pve-file-restore-ntfs3g metapackage
-        run: |
-          set -euo pipefail
-          ./scripts/build.sh --component meta 2>&1 | tee build-meta.log
+        run: ./scripts/build.sh --component meta 2>&1 | tee build-meta.log
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: meta
@@ -182,172 +259,96 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  test:
-    needs: [changes, build-file-restore, build-restore-image, build-dedup-plugin, build-meta]
+  artifact-proofs:
+    needs: [changes, checks, build-file-restore, build-restore-image, build-dedup-plugin, build-meta]
     if: >-
       always() && !cancelled() && !contains(needs.*.result, 'failure') &&
-      (needs.changes.outputs.file-restore == 'true' ||
-       needs.changes.outputs.restore-image == 'true' ||
-       needs.changes.outputs.dedup-plugin == 'true' ||
-       needs.changes.outputs.meta == 'true')
+      needs.changes.outputs.heavy == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Installer and checker shell tests
-        run: |
-          set -euo pipefail
-          tests/cluster-install/test.sh
-          tests/check-command/test.sh
-      - name: Download artifacts
+      - name: Download packages built in this run
+        if: needs.changes.outputs.file-restore == 'true'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          path: artifacts
-      - name: Static checks (daemon, initramfs, Provides)
+          name: file-restore
+          path: artifacts/file-restore
+      - name: Download restore image built in this run
+        if: needs.changes.outputs.restore-image == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: restore-image
+          path: artifacts/restore-image
+      - name: Download plugin built in this run
+        if: needs.changes.outputs.dedup-plugin == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: dedup-plugin
+          path: artifacts/dedup-plugin
+      - name: Download meta built in this run
+        if: needs.changes.outputs.meta == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: meta
+          path: artifacts/meta
+      - name: Fill missing packages from latest verified releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends binutils initramfs-tools-core
-
-          fr=$(find artifacts/file-restore -name 'proxmox-backup-file-restore_*.deb' 2>/dev/null | head -1 || true)
-          ri=$(find artifacts/restore-image -name 'proxmox-backup-restore-image_*.deb' 2>/dev/null | head -1 || true)
-
-          if [ -n "$fr" ]; then
-            echo "== file-restore checks: $fr"
-            dpkg-deb -I "$fr" | grep -q 'Provides: proxmox-backup-file-restore-ntfs3g'
-            dpkg-deb -I "$fr" | grep -q 'Maintainer: pve-file-restore-ntfs3g'
-
-            tmp=$(mktemp -d)
-            dpkg-deb -x "$fr" "$tmp"
-            grep -qF 'try FUSE mount using ntfs-3g' \
-              < <(strings "$tmp/usr/lib/x86_64-linux-gnu/proxmox-backup/file-restore/proxmox-restore-daemon")
-            grep -qF 'remounting with ntfs-3g' \
-              < <(strings "$tmp/usr/lib/x86_64-linux-gnu/proxmox-backup/file-restore/proxmox-restore-daemon")
-            zcat "$tmp/usr/share/doc/proxmox-backup-file-restore/changelog.Debian.gz" \
-              | grep -qF 'Rebuild with the pve-file-restore-ntfs3g patch set.'
-
-            rm -rf "$tmp"
-          fi
-
-          if [ -n "$ri" ]; then
-            echo "== restore-image checks: $ri"
-            dpkg-deb -I "$ri" | grep -q 'Provides: proxmox-backup-restore-image-ntfs3g'
-            dpkg-deb -I "$ri" | grep -q 'Maintainer: pve-file-restore-ntfs3g'
-
-            tmp=$(mktemp -d)
-            dpkg-deb -x "$ri" "$tmp"
-            img="$tmp/usr/lib/x86_64-linux-gnu/proxmox-backup/file-restore/initramfs.img"
-            grep -qx 'usr/bin/ntfs-3g' < <(lsinitramfs "$img")
-            grep -qx 'usr/lib/x86_64-linux-gnu/ntfs-3g/ntfs-plugin-80000013.so' < <(lsinitramfs "$img")
-            grep -q 'libfuse3' < <(lsinitramfs "$img")
-            zcat "$tmp/usr/share/doc/proxmox-backup-restore-image/changelog.Debian.gz" \
-              | grep -qF 'Rebuild with the pve-file-restore-ntfs3g patch set.'
-            rm -rf "$tmp"
-          fi
-
-          meta=$(find artifacts/meta -name 'pve-file-restore-ntfs3g_*.deb' 2>/dev/null | head -1 || true)
-          if [ -n "$meta" ]; then
-            echo "== meta checks: $meta"
-            dpkg-deb -I "$meta" | grep -q 'Depends: proxmox-backup-file-restore-ntfs3g'
-            dpkg-deb -I "$meta" | grep -q 'proxmox-backup-restore-image-ntfs3g'
-          fi
-      - name: Metapackage dependency test
+          for component in file-restore restore-image dedup-plugin meta; do
+            tests/artifacts/fetch-latest.sh "$component" artifacts
+          done
+      - name: Verify package artifacts
+        env:
+          BUILT_FILE_RESTORE: ${{ needs.changes.outputs.file-restore }}
+          BUILT_RESTORE_IMAGE: ${{ needs.changes.outputs.restore-image }}
+          BUILT_DEDUP_PLUGIN: ${{ needs.changes.outputs.dedup-plugin }}
+          BUILT_META: ${{ needs.changes.outputs.meta }}
+        run: |
+          built_components=()
+          [ "$BUILT_FILE_RESTORE" = true ] && built_components+=(file-restore)
+          [ "$BUILT_RESTORE_IMAGE" = true ] && built_components+=(restore-image)
+          [ "$BUILT_DEDUP_PLUGIN" = true ] && built_components+=(dedup-plugin)
+          [ "$BUILT_META" = true ] && built_components+=(meta)
+          tests/artifacts/check.sh artifacts "${built_components[@]}"
+      - name: Verify metapackage dependency resolution
         run: |
           set -euo pipefail
-          meta=$(find artifacts/meta -name 'pve-file-restore-ntfs3g_*.deb' 2>/dev/null | head -1 || true)
-          [ -n "$meta" ] || { echo "meta package not built in this run, skipping"; exit 0; }
-          fr=$(find artifacts/file-restore -name 'proxmox-backup-file-restore_*.deb' 2>/dev/null | head -1 || true)
-          ri=$(find artifacts/restore-image -name 'proxmox-backup-restore-image_*.deb' 2>/dev/null | head -1 || true)
-          [ -n "$fr" ] && [ -n "$ri" ] || { echo "patched packages not in this run, skipping"; exit 0; }
-
-          docker run --rm -v "$PWD/artifacts:/artifacts:ro" \
+          docker run --rm \
+            -v "$PWD/artifacts:/artifacts:ro" \
+            -v "$PWD/tests/artifacts:/tests/artifacts:ro" \
             debian:13@sha256:4c25275446ca371766b8b093c696782eabce06263fccacb8d5d813b3dc44b308 \
-            bash -euxo pipefail -c '
-              export DEBIAN_FRONTEND=noninteractive
-              apt-get update -qq
-              apt-get install -y --no-install-recommends cpio dpkg-dev
-              meta=$(find /artifacts/meta -name "pve-file-restore-ntfs3g_*.deb" | head -1)
-              fr=$(find /artifacts/file-restore -name "proxmox-backup-file-restore_*.deb" | head -1)
-              ri=$(find /artifacts/restore-image -name "proxmox-backup-restore-image_*.deb" | head -1)
-              fr_version=$(dpkg-deb -f "$fr" Version)
-              ri_version=$(dpkg-deb -f "$ri" Version)
-              fr_upstream=${fr_version%+ntfs3g*}
-              ri_upstream=${ri_version%+ntfs3g*}
-              echo "deb [trusted=yes] http://download.proxmox.com/debian/pve trixie pve-no-subscription" >/etc/apt/sources.list.d/proxmox.list
-              apt-get update -qq
-              mkdir -p /repo/official /repo/patched
-              (cd /repo/official && apt-get download \
-                "proxmox-backup-file-restore=$fr_upstream" \
-                "proxmox-backup-restore-image=$ri_upstream")
-              cp "$fr" "$ri" "$meta" /repo/patched/
-              for repo in /repo/official /repo/patched; do
-                (cd "$repo" && dpkg-scanpackages . /dev/null | gzip -9c > Packages.gz)
-              done
-              echo "deb [trusted=yes] file:/repo/official ./" >/etc/apt/sources.list.d/official-local.list
-              apt-get update -qq
-              # The official packages are present, but do not provide the
-              # patched virtual dependencies, so meta alone must be refused.
-              if apt-get install -y --no-install-recommends "$meta"; then
-                echo "metapackage installed with only official packages: FAIL" >&2
-                exit 1
-              fi
-              echo "deb [trusted=yes] file:/repo/patched ./" >/etc/apt/sources.list.d/patched-local.list
-              apt-get update -qq
-              apt-get install -y --no-install-recommends pve-file-restore-ntfs3g
-            '
-      - name: Dedup plugin fixture test
+            bash /tests/artifacts/meta-apt.sh /artifacts
+      - name: Download the published fixture release
+        if: needs.changes.outputs.fixture == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if [ ! -f tests/fixtures/ntfs-dedup.img.zst ]; then
-            echo "::error::missing required synthetic Windows Data Dedup fixture: tests/fixtures/ntfs-dedup.img.zst (see tests/README.md)"
-            exit 1
-          fi
-          deb=$(find artifacts/dedup-plugin -name 'ntfs-3g-plugin-dedup_*.deb' 2>/dev/null | head -1 || true)
-          [ -n "$deb" ] || { echo "plugin not built in this run, skipping"; exit 0; }
+          mkdir -p fixture-assets
+          gh release download fixtures/ntfs-dedup-2 --repo "${{ github.repository }}" \
+            --dir fixture-assets \
+            --pattern ntfs-dedup.img.zst \
+            --pattern ntfs-dedup.img.zst.sha256 \
+            --pattern manifest.sha256 \
+            --pattern dedup-files.txt
+      - name: Run the fixture with and without the plugin
+        if: needs.changes.outputs.fixture == 'true'
+        run: |
+          set -euo pipefail
           docker run --rm --device /dev/fuse --cap-add SYS_ADMIN \
-            -v "$PWD:/repo:ro" \
+            -v "$PWD/artifacts:/artifacts:ro" \
+            -v "$PWD/fixture-assets:/fixture:ro" \
+            -v "$PWD/tests:/tests:ro" \
             debian:13@sha256:4c25275446ca371766b8b093c696782eabce06263fccacb8d5d813b3dc44b308 \
-            bash -euxo pipefail -c '
-              export DEBIAN_FRONTEND=noninteractive
-              apt-get update -qq
-              apt-get install -y --no-install-recommends ntfs-3g zstd
-              deb=$(find /repo/artifacts/dedup-plugin -name "ntfs-3g-plugin-dedup_*.deb" | head -1)
-              dpkg -i "$deb"
-              zstd -d /repo/tests/fixtures/ntfs-dedup.img.zst -o /tmp/ntfs-dedup.img
-              mkdir -p /mnt/dedup
-              ntfs-3g -o ro /tmp/ntfs-dedup.img /mnt/dedup
-              cd /mnt/dedup
-              sha256sum -c /repo/tests/fixtures/ntfs-dedup.sha256
-            '
-      - name: Boot smoke test (QEMU)
+            bash -c 'apt-get update -qq && apt-get install -y --no-install-recommends ntfs-3g zstd dpkg && /tests/fixture/ci.sh /artifacts /fixture'
+      - name: Run boot smoke
+        if: needs.changes.outputs.smoke == 'true'
         run: |
           set -euo pipefail
-          ri=$(find artifacts/restore-image -name 'proxmox-backup-restore-image_*.deb' 2>/dev/null | head -1 || true)
-          fr=$(find artifacts/file-restore -name 'proxmox-backup-file-restore_*.deb' 2>/dev/null | head -1 || true)
-          [ -n "$ri" ] && [ -n "$fr" ] || { echo "restore image or daemon not built in this run, skipping"; exit 0; }
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends cpio qemu-system-x86 qemu-utils
-          sudo chmod 666 /dev/kvm || true
-          tmp=$(mktemp -d)
-          dpkg-deb -x "$ri" "$tmp/restore-image"
-          dpkg-deb -x "$fr" "$tmp/file-restore"
-          kernel="$tmp/restore-image/usr/lib/x86_64-linux-gnu/proxmox-backup/file-restore/bzImage"
-          initrd="$tmp/restore-image/usr/lib/x86_64-linux-gnu/proxmox-backup/file-restore/initramfs.img"
-          # The upstream image deliberately omits the daemon. Append a second
-          # newc archive with the freshly built daemon, matching how the PVE
-          # restore path supplies it, so this asserts actual daemon startup.
-          mkdir "$tmp/inject"
-          install -m 0755 \
-            "$tmp/file-restore/usr/lib/x86_64-linux-gnu/proxmox-backup/file-restore/proxmox-restore-daemon" \
-            "$tmp/inject/proxmox-restore-daemon"
-          (cd "$tmp/inject" && find . -print0 | cpio --null -o --format=newc) >> "$initrd"
-          set +e
-          timeout 120 qemu-system-x86_64 \
-            -enable-kvm -m 1024 -nographic -no-reboot \
-            -kernel "$kernel" -initrd "$initrd" \
-            -append "console=ttyS0" > qemu-boot.log 2>&1
-          rc=$?
-          set -e
-          cat qemu-boot.log
-          ! grep -qi 'kernel panic' qemu-boot.log
-          ! grep -qi '/proxmox-restore-daemon missing from image' qemu-boot.log
-          grep -qF '[init-shim] reached daemon start' qemu-boot.log
+          sudo apt-get install -y --no-install-recommends cpio qemu-system-x86 qemu-utils initramfs-tools-core binutils socat
+          if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm; fi
+          tests/smoke/run.sh artifacts

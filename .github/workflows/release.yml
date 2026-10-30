@@ -72,7 +72,7 @@ jobs:
             work=$(mktemp -d)
             notes=$(mktemp)
             cp "$deb" "$work/"
-            (cd "$work" && sha256sum *.deb > SHA256SUMS)
+            (cd "$work" && sha256sum -- *.deb > SHA256SUMS)
             {
               changelog_section "$tag"
               echo
@@ -91,7 +91,7 @@ jobs:
 
           if [ "${#published[@]}" -gt 0 ]; then
             tags_csv=$(printf '%s, ' "${published[@]}" | sed 's/, $//')
-            body=$(printf 'Pre-releases (testing channel): %s.\n\nTest them on the lab cluster (`scripts/cluster-install.sh --channel testing`), then promote each tag to stable with the promote workflow (requires approval).' "$tags_csv")
+            body=$(printf "Pre-releases (testing channel): %s.\n\nTest them on the lab cluster (\`scripts/cluster-install.sh --channel testing\`), then promote each tag to stable with the promote workflow (requires approval)." "$tags_csv")
             gh issue create \
               --title "pre-release published: ${published[*]}" \
               --body "$body" \

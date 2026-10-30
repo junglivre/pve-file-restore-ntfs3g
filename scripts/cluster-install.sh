@@ -14,6 +14,8 @@
 #   DIR/restore-image/{proxmox-backup-restore-image_*.deb,SHA256SUMS}
 #   DIR/meta/{pve-file-restore-ntfs3g_*.deb,SHA256SUMS}
 set -Eeuo pipefail
+# shellcheck disable=SC1078,SC1079,SC2016
+# Reason: remote shell quoting preserves the literal dpkg format string.
 
 REPO='junglivre/pve-file-restore-ntfs3g'
 COMPONENTS=(file-restore restore-image meta)
@@ -22,7 +24,7 @@ declare -A DEB_OF=(
     [restore-image]=proxmox-backup-restore-image
     [meta]=pve-file-restore-ntfs3g
 )
-HELD_PACKAGES='proxmox-backup-file-restore proxmox-backup-restore-image'
+HELD_PACKAGES=(proxmox-backup-file-restore proxmox-backup-restore-image)
 
 CHECK_ONLY=0
 FROM_DIR=''
@@ -60,6 +62,8 @@ echo "online nodes: ${NODES[*]}"
 if [ "$CHECK_ONLY" -eq 1 ]; then
     printf '%-16s %-28s %-22s %s\n' NODE FILE-RESTORE RESTORE-IMAGE STATUS
     for node in "${NODES[@]}"; do
+        # shellcheck disable=SC1078,SC1079,SC2016
+        # Reason: remote shell quoting preserves the literal dpkg format string.
         out=$(ssh -o BatchMode=yes -o ConnectTimeout=5 "root@$node" '
             fr=$(dpkg-query -W -f '"'"'${Version}'"'"' proxmox-backup-file-restore 2>/dev/null || echo "-")
             ri=$(dpkg-query -W -f '"'"'${Version}'"'"' proxmox-backup-restore-image 2>/dev/null || echo "-")
@@ -69,8 +73,11 @@ if [ "$CHECK_ONLY" -eq 1 ]; then
                 && grep -aqF "try FUSE mount using ntfs-3g" "$d/proxmox-restore-daemon" \
                 && patched=1
             plugin=0
-            [ -r "$d/initramfs.img" ] \
-                && lsinitramfs "$d/initramfs.img" 2>/dev/null | grep -qx "usr/lib/x86_64-linux-gnu/ntfs-3g/ntfs-plugin-80000013.so" \
+            listing=''
+            if [ -r "$d/initramfs.img" ]; then
+                listing=$(lsinitramfs "$d/initramfs.img" 2>/dev/null || true)
+            fi
+            grep -qx "usr/lib/x86_64-linux-gnu/ntfs-3g/ntfs-plugin-80000013.so" <<<"$listing" \
                 && plugin=1
             if [ "$patched" = 1 ] && [ "$plugin" = 1 ]; then s=ATIVO; else s=PERDIDO; fi
             echo "$fr|$ri|$s"
@@ -165,17 +172,19 @@ for node in "${NODES[@]}"; do
         ssh -o BatchMode=yes "root@$node" rm -rf "$remote_dir" </dev/null || true
         exit 1
     fi
-    ssh -o BatchMode=yes "root@$node" bash -s -- "$remote_dir" "$HOLD" "$HELD_PACKAGES" </dev/null <<'EOF'
+    ssh -o BatchMode=yes "root@$node" bash -s -- "$remote_dir" "$HOLD" \
+        "${HELD_PACKAGES[*]}" <<'EOF'
 set -Eeuo pipefail
 remote_dir=$1
 hold_requested=$2
-held_packages=$3
+read -r -a held_packages <<<"$3"
 trap 'rm -rf "$remote_dir"' EXIT
 
 apt_flags=(-y)
 if [ "$hold_requested" = 1 ]; then
-    for package in $held_packages; do
-        if apt-mark showhold | grep -qxF "$package"; then
+    for package in "${held_packages[@]}"; do
+        held=$(apt-mark showhold)
+        if grep -qxF "$package" <<<"$held"; then
             apt_flags+=(--allow-change-held-packages)
             break
         fi
@@ -183,7 +192,7 @@ if [ "$hold_requested" = 1 ]; then
 fi
 apt-get install "${apt_flags[@]}" "$remote_dir"/*.deb
 if [ "$hold_requested" = 1 ]; then
-    apt-mark hold $held_packages
+    apt-mark hold "${held_packages[@]}"
 fi
 pve-file-restore-ntfs3g-check
 EOF

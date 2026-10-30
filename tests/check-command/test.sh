@@ -33,7 +33,10 @@ if "$CHECK" --json > "$TMP/missing.json" 2>/dev/null; then
   exit 1
 fi
 grep -qF '"version": null' "$TMP/missing.json"
-! grep -qF '"null"' "$TMP/missing.json"
+if grep -qF '"null"' "$TMP/missing.json"; then
+  echo 'JSON null was serialized as a string' >&2
+  exit 1
+fi
 
 export FILE_RESTORE_VERSION='4.2.8-1+ntfs3g2'
 export RESTORE_IMAGE_VERSION='1.0.0+ntfs3g3'
@@ -57,5 +60,18 @@ if "$CHECK" --json > "$TMP/stale.json" 2>/dev/null; then
   exit 1
 fi
 grep -qF '"initramfs_cache_fresh": false' "$TMP/stale.json"
+
+# An official package with no ntfs-3g markers must not be reported as patched.
+touch -d '2026-01-01T00:00:00Z' "$TREE/var/lib/dpkg/info/"*.list
+export FILE_RESTORE_VERSION='4.2.8-1'
+export RESTORE_IMAGE_VERSION='1.0.0'
+printf '%s\0' 'official daemon' \
+  > "$TREE/usr/lib/x86_64-linux-gnu/proxmox-backup/file-restore/proxmox-restore-daemon"
+if "$CHECK" --json > "$TMP/official.json"; then
+  echo 'official packages unexpectedly passed' >&2
+  exit 1
+fi
+grep -qF '"patched": false' "$TMP/official.json"
+grep -qF '"ok": false' "$TMP/official.json"
 
 echo 'check-command tests passed'

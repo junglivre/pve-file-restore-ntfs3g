@@ -9,7 +9,7 @@ set -Eeuo pipefail
 
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$ROOT_DIR"
-# shellcheck source=lib-lock.sh
+# shellcheck source=./scripts/lib-lock.sh
 source scripts/lib-lock.sh
 
 PUSH=${PUSH:-0}
@@ -33,10 +33,10 @@ if [ -n "$SIMULATE_FROM" ]; then
     for entry in "${entries[@]}"; do
         key=${entry%%=*}
         value=${entry#*=}
-        [ "$key" != "$entry" ] && [ -n "$key" ] && [ -n "$value" ] || {
+        if [ "$key" = "$entry" ] || [ -z "$key" ] || [ -z "$value" ]; then
             echo "SIMULATE_FROM entries must be component=value: $entry" >&2
             exit 2
-        }
+        fi
         SIMULATED["$key"]=$value
     done
 fi
@@ -44,7 +44,9 @@ fi
 open_issue() {
     local title=$1 body=$2 number
     log "ISSUE: $title"
-    [ "$PUSH" = 1 ] && [ "$DRY_RUN" != 1 ] || return 0
+    if [ "$PUSH" != 1 ] || [ "$DRY_RUN" = 1 ]; then
+        return 0
+    fi
     number=$(gh issue list --state open --search "in:title $title" --json number,title \
         --jq ".[] | select(.title == \"$title\") | .number" | head -1 || true)
     if [ -n "$number" ]; then
@@ -111,7 +113,11 @@ queue_component_bump() {
     trap 'rm -rf "$wt"' RETURN
     git clone --quiet "$repo_url" "$wt/src"
     git -C "$wt/src" checkout --quiet "$commit"
-    if [ -n "$disk_check" ] && git -C "$wt/src" show "$commit:$disk_check" | grep -qF 'ntfs-3g'; then
+    disk_source=''
+    if [ -n "$disk_check" ]; then
+        disk_source=$(git -C "$wt/src" show "$commit:$disk_check")
+    fi
+    if [ -n "$disk_source" ] && grep -qF 'ntfs-3g' <<<"$disk_source"; then
         open_issue "upstream incorporated the ntfs-3g fallback" \
             "Commit $commit ($new_upstream) already mentions \`ntfs-3g\` in \`$disk_check\`. The daemon patch needs human review."
         return 0
@@ -144,7 +150,10 @@ queue_dedup_bump() {
     head=$(git ls-remote "$DEDUP_REPO" refs/heads/main | awk '{print $1}')
     [ -n "$head" ] || { echo "cannot resolve dedup plugin main" >&2; return 1; }
     current=$(lock_field dedup-plugin commit)
-    [ "$head" = "$current" ] && { log "dedup-plugin: up to date ($current)"; return 0; }
+    if [ "$head" = "$current" ]; then
+        log "dedup-plugin: up to date ($current)"
+        return 0
+    fi
 
     tmp=$(mktemp -d)
     trap 'rm -rf "$tmp"' RETURN
@@ -230,7 +239,9 @@ publish_updates() {
 
 if [ -n "$SIMULATE_FROM" ]; then
     for component in file-restore restore-image; do
-        [ -n "${SIMULATED[$component]:-}" ] && queue_component_bump "$component" "${SIMULATED[$component]}"
+        if [ -n "${SIMULATED[$component]:-}" ]; then
+            queue_component_bump "$component" "${SIMULATED[$component]}"
+        fi
     done
 else
     declare -A PACKAGE_OF=(

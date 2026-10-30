@@ -82,7 +82,13 @@ if $patched && $ntfs3g && $dedup_plugin && $initramfs_cache_fresh; then
     ok=true
 fi
 
-mark() { $1 && printf '\xe2\x9c\x94' || printf '\xe2\x9c\x98'; }
+mark() {
+    if "$1"; then
+        printf '\xe2\x9c\x94'
+    else
+        printf '\xe2\x9c\x98'
+    fi
+}
 
 if [ "$JSON" -eq 1 ]; then
     printf '{"ok": %s, "file_restore": {"version": %s, "patched": %s, "dedup_remount": %s}, "restore_image": {"version": %s, "ntfs3g": %s, "dedup_plugin": %s}, "initramfs_cache_fresh": %s}\n' \

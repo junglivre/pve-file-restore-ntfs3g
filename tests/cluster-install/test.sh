@@ -72,7 +72,7 @@ grep -qF 'copy verified packages' "$TMP/dry-run.out"
 # remote shell; the mock returns a populated status row.
 "$ROOT/scripts/cluster-install.sh" --check > "$TMP/check.out"
 grep -qF '4.2.8-1+ntfs3g2' "$TMP/check.out"
-grep -qF '${Version}' "$LOG/ssh"
+grep -qF "\${Version}" "$LOG/ssh"
 
 # Offline input requires one release directory and an individual SHA file per
 # component. It reaches the remote install path only after verification.
@@ -100,4 +100,3 @@ if "$ROOT/scripts/cluster-install.sh" --from-dir "$FROM" > "$TMP/bad.out" 2>&1; 
   exit 1
 fi
 grep -q 'FAILED' "$TMP/bad.out"
-

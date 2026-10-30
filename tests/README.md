@@ -1,25 +1,27 @@
 # Test fixtures
 
-## `fixtures/ntfs-dedup.img.zst` (not yet committed)
+## `fixtures/ntfs-dedup-2`
 
-A small NTFS volume image with Windows Server Data Deduplication enabled and
-only synthetic files. Created once, manually, on a lab Windows Server:
+The synthetic Windows Server Data Dedup fixture is published as the
+`fixtures/ntfs-dedup-2` release in `junglivre/pve-file-restore-ntfs3g`. CI
+downloads its four assets:
 
-1. Create a small VHDX, format it NTFS, enable Dedup
-   (`Enable-DedupVolume`), copy synthetic text/binary files onto it and run
-   `Start-DedupJob -Type Optimization`. Wait until the files are reparse
-   points (`System Volume Information/Dedup` exists).
-2. Record the expected checksums of the deduplicated files in
-   `fixtures/ntfs-dedup.sha256` (paths relative to the volume root).
-3. Detach, compress: `zstd -19 ntfs-dedup.img`, commit both files.
+- `ntfs-dedup.img.zst`, a bare NTFS partition image;
+- `ntfs-dedup.img.zst.sha256`, the image checksum;
+- `manifest.sha256`, UTF-8/LF entries in the form `<sha256>  <relative path>`;
+- `dedup-files.txt`, the nine Dedup reparse-point paths.
 
-**The fixture contains only synthetic files. Never put client data in it.**
+The image is not stored in this repository. A local reference copy is kept in
+the lab fixture directory. `tests/fixture/run.sh` verifies the image checksum,
+requires a successful read-only mount, and checks that without the plugin only
+the nine listed Dedup paths fail, while with the plugin all eleven entries
+match.
 
-## What CI does with it
+## What CI does
 
-`build.yml` mounts the image read-only with `ntfs-3g` in a Debian 13
-container that has the freshly built `ntfs-3g-plugin-dedup` installed, then
-runs `sha256sum -c fixtures/ntfs-dedup.sha256`. Wrong content from a missing
-or broken plugin fails the job.
-
-While the fixture is absent, CI fails with an explicit prerequisite error.
+Every pull request runs `tests/run-all.sh`, which runs ShellCheck, actionlint,
+and every unit-test suite. When a component or proof input changes, the
+artifact job verifies the packages, tests the metapackage against official and
+patched APT repositories, runs the fixture with and without the plugin, and
+boots the restore image under QEMU. The boot proof accepts only timeout rc 124
+and requires a log line emitted by the restore daemon itself.
