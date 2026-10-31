@@ -27,9 +27,17 @@ Useful modes:
   `DIR/{file-restore,restore-image,meta}/{package.deb,SHA256SUMS}`;
 - `--dry-run` — show the local and remote operations without contacting a
   remote node or writing anything there.
+- `--report FILE` — write a JSON object with one `ACTIVE` or `LOST` entry per
+  online node. Each entry includes the command exit status and the check JSON
+  when the node returned one. A failed node is recorded and does not stop the
+  remaining nodes; the command exits non-zero if any node is `LOST`.
 
-The script is idempotent: run it again after every new release of this
-project.
+The script selects the highest Debian version available for each component,
+updates APT on the remote node before installing, and then runs
+`pve-file-restore-ntfs3g-check --json`. `--from-dir` copies only the single
+package whose checksum was verified from each component directory; an extra
+or uncovered package is not installed. The script is idempotent: run it again
+after every new release of this project.
 
 ## Why `--hold` matters
 
@@ -53,6 +61,14 @@ pve-file-restore-ntfs3g-check --json   # machine-readable contract
 ```
 
 Or cluster-wide: `./scripts/cluster-install.sh --check`.
+
+The checker rejects unknown arguments and reports `LOST` for an official or
+partially matching package, even when its version contains a similar string.
+Both patched packages must be in the Debian `install ok installed` state, have
+the `+ntfs3gN` version suffix, and carry the exact versioned virtual Provides
+from the package contract. It also checks the cached File Restore initramfs
+freshness and reads the appended `newc` cpio archive to confirm that the
+patched restore daemon is actually present there.
 
 ## Roll back to the official packages
 

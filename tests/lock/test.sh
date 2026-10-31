@@ -44,7 +44,7 @@ grep -qF 'inputs hash mismatch' "$TMP/same-version.out"
 
 # A new version makes the same input change admissible after its lock hash is
 # refreshed by the helper.
-lock_update meta 2.1.7 - - -
+lock_update meta 2.1.8 - - -
 if "$SANDBOX/scripts/lib-lock.sh" verify --against HEAD > "$TMP/bumped.out" 2>&1; then
     :
 else

@@ -17,8 +17,24 @@
 #    "initramfs_cache_fresh": true}
 set -Eeuo pipefail
 
+usage() {
+    cat <<'EOF'
+usage: pve-file-restore-ntfs3g-check [--json]
+
+Verify that the patched File Restore packages and cached restore initramfs are active.
+  --json       print the machine-readable result
+  -h, --help   show this usage text
+EOF
+}
+
 JSON=0
-[ "${1:-}" = '--json' ] && JSON=1
+while [ "$#" -gt 0 ]; do
+    case $1 in
+        --json) JSON=1; shift ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
+    esac
+done
 
 # PVE_FILE_RESTORE_CHECK_ROOT is only for the package's hermetic shell test.
 # Empty in production, so every default remains an absolute node path.
@@ -28,8 +44,41 @@ IMAGE_INITRAMFS=${PVE_FILE_RESTORE_IMAGE_INITRAMFS:-"$ROOT/usr/lib/x86_64-linux-
 CACHE_INITRAMFS=${PVE_FILE_RESTORE_CACHE_INITRAMFS:-"$ROOT/var/cache/proxmox-backup/file-restore-initramfs.img"}
 DPKG_INFO_DIR=${PVE_FILE_RESTORE_DPKG_INFO_DIR:-"$ROOT/var/lib/dpkg/info"}
 
+pkg_installed() {
+    local status
+    status=$(dpkg-query -W -f '${Status}' "$1" 2>/dev/null || true)
+    # The selection word is "hold" after `apt-mark hold` (cluster-install
+    # --hold does that); only the state word says whether it is installed.
+    case $status in
+        'install ok installed'|'hold ok installed') return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 pkg_version() {
-    dpkg-query -W -f '${Version}' "$1" 2>/dev/null || true
+    if pkg_installed "$1"; then
+        dpkg-query -W -f '${Version}' "$1" 2>/dev/null || true
+    fi
+}
+
+pkg_provides() {
+    if pkg_installed "$1"; then
+        dpkg-query -W -f '${Provides}' "$1" 2>/dev/null || true
+    fi
+}
+
+has_provide() {
+    local provides=$1 expected=$2 item
+    while IFS= read -r item; do
+        item=${item#"${item%%[![:space:]]*}"}
+        item=${item%"${item##*[![:space:]]}"}
+        [ "$item" = "$expected" ] && return 0
+    done < <(tr ',' '\n' <<<"$provides")
+    return 1
+}
+
+is_patched_version() {
+    [[ "$1" =~ \+ntfs3g[0-9]+$ ]]
 }
 
 json_string_or_null() {
@@ -44,10 +93,19 @@ json_string_or_null() {
 
 file_restore_version=$(pkg_version proxmox-backup-file-restore)
 restore_image_version=$(pkg_version proxmox-backup-restore-image)
+file_restore_provides=$(pkg_provides proxmox-backup-file-restore)
+restore_image_provides=$(pkg_provides proxmox-backup-restore-image)
 
 fallback=false
 dedup_remount=false
-if [ -n "$file_restore_version" ] && [ -r "$DAEMON" ]; then
+file_restore_variant=false
+if is_patched_version "$file_restore_version" \
+    && has_provide "$file_restore_provides" \
+        "proxmox-backup-file-restore-ntfs3g (= $file_restore_version)" \
+    && has_provide "$file_restore_provides" 'pve-file-restore-ntfs3g-daemon (= 2)'; then
+    file_restore_variant=true
+fi
+if $file_restore_variant && [ -r "$DAEMON" ]; then
     grep -aqF 'try FUSE mount using ntfs-3g' "$DAEMON" && fallback=true
     grep -aqF 'remounting with ntfs-3g' "$DAEMON" && dedup_remount=true
 fi
@@ -58,7 +116,14 @@ fi
 
 ntfs3g=false
 dedup_plugin=false
-if [ -n "$restore_image_version" ] && [ -r "$IMAGE_INITRAMFS" ]; then
+restore_image_variant=false
+if is_patched_version "$restore_image_version" \
+    && has_provide "$restore_image_provides" \
+        "proxmox-backup-restore-image-ntfs3g (= $restore_image_version)" \
+    && has_provide "$restore_image_provides" 'pve-file-restore-ntfs3g-image (= 3)'; then
+    restore_image_variant=true
+fi
+if $restore_image_variant && [ -r "$IMAGE_INITRAMFS" ]; then
     listing=$(lsinitramfs "$IMAGE_INITRAMFS" 2>/dev/null || true)
     grep -qx 'usr/bin/ntfs-3g' <<<"$listing" && ntfs3g=true
     grep -qx 'usr/lib/x86_64-linux-gnu/ntfs-3g/ntfs-plugin-80000013.so' <<<"$listing" \
@@ -67,18 +132,51 @@ fi
 
 # The file-restore postinst regenerates this cache. A cache older than either
 # package's dpkg file list predates an installation and can still boot the old
-# daemon or restore image.
+# daemon or restore image. The patched daemon is appended as a real newc cpio
+# archive; inspect that archive rather than trusting the host daemon alone.
 initramfs_cache_fresh=false
 file_restore_list="$DPKG_INFO_DIR/proxmox-backup-file-restore.list"
 restore_image_list="$DPKG_INFO_DIR/proxmox-backup-restore-image.list"
+cache_has_patched_daemon=false
+newc_daemon_present() {
+    local archive=$1 listing path archive_path='' daemon_file
+    [ -r "$archive" ] || return 1
+    command -v cpio >/dev/null 2>&1 || return 1
+    # The upstream file-restore postinst copies the base initramfs (an
+    # uncompressed newc archive) and appends the daemon at its root with
+    # `printf ./proxmox-restore-daemon | cpio -o --format=newc -A`, so the
+    # daemon is a root member of that one archive.
+    listing=$(cpio -it --format=newc --quiet <"$archive" 2>/dev/null) || return 1
+    while IFS= read -r path; do
+        case $path in
+            proxmox-restore-daemon|./proxmox-restore-daemon) archive_path=$path ;;
+        esac
+    done <<<"$listing"
+    [ -n "$archive_path" ] || return 1
+    daemon_file=$(mktemp)
+    if cpio -i --format=newc --quiet --to-stdout -- "$archive_path" \
+            <"$archive" >"$daemon_file" 2>/dev/null \
+        && grep -aqF 'try FUSE mount using ntfs-3g' "$daemon_file" \
+        && grep -aqF 'remounting with ntfs-3g' "$daemon_file"; then
+        rm -f "$daemon_file"
+        return 0
+    fi
+    rm -f "$daemon_file"
+    return 1
+}
+
 if [ -r "$CACHE_INITRAMFS" ] && [ -r "$file_restore_list" ] && [ -r "$restore_image_list" ] \
     && [ "$CACHE_INITRAMFS" -nt "$file_restore_list" ] \
     && [ "$CACHE_INITRAMFS" -nt "$restore_image_list" ]; then
-    initramfs_cache_fresh=true
+    if newc_daemon_present "$CACHE_INITRAMFS"; then
+        cache_has_patched_daemon=true
+        initramfs_cache_fresh=true
+    fi
 fi
 
 ok=false
-if $patched && $ntfs3g && $dedup_plugin && $initramfs_cache_fresh; then
+if $patched && $ntfs3g && $dedup_plugin && $initramfs_cache_fresh \
+    && $cache_has_patched_daemon; then
     ok=true
 fi
 
