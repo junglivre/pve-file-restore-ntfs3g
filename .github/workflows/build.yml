@@ -111,14 +111,16 @@ jobs:
           PROJECT_DIR: ${{ github.workspace }}
           WORK_DIR: ${{ github.workspace }}/.build
           OUTPUT_DIR: ${{ github.workspace }}/dist
-        run: bash scripts/build-in-container.sh 2>&1 | tee build-file-restore.log
+        run: |
+          mkdir -p dist/file-restore
+          bash scripts/build-in-container.sh 2>&1 | tee dist/file-restore/build-file-restore.log
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: file-restore
           path: |
-            dist/*.deb
-            dist/SHA256SUMS
-            build-file-restore.log
+            dist/file-restore/*.deb
+            dist/file-restore/SHA256SUMS
+            dist/file-restore/build-file-restore.log
           if-no-files-found: error
           retention-days: 30
 
@@ -133,19 +135,21 @@ jobs:
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: dedup-plugin
-          path: dist
+          path: dist/dedup-plugin
       - name: Build proxmox-backup-restore-image
         env:
           WORK_DIR: ${{ github.workspace }}/.build
           OUTPUT_DIR: ${{ github.workspace }}/dist
-        run: ./scripts/build.sh --component restore-image 2>&1 | tee build-restore-image.log
+        run: |
+          mkdir -p dist/restore-image
+          ./scripts/build.sh --component restore-image 2>&1 | tee dist/restore-image/build-restore-image.log
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: restore-image
           path: |
-            dist/*.deb
-            dist/SHA256SUMS
-            build-restore-image.log
+            dist/restore-image/*.deb
+            dist/restore-image/SHA256SUMS
+            dist/restore-image/build-restore-image.log
           if-no-files-found: error
           retention-days: 30
 
@@ -156,14 +160,16 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Build ntfs-3g-plugin-dedup
-        run: ./scripts/build.sh --component dedup-plugin 2>&1 | tee build-dedup-plugin.log
+        run: |
+          mkdir -p dist/dedup-plugin
+          ./scripts/build.sh --component dedup-plugin 2>&1 | tee dist/dedup-plugin/build-dedup-plugin.log
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: dedup-plugin
           path: |
-            dist/*.deb
-            dist/SHA256SUMS
-            build-dedup-plugin.log
+            dist/dedup-plugin/*.deb
+            dist/dedup-plugin/SHA256SUMS
+            dist/dedup-plugin/build-dedup-plugin.log
           if-no-files-found: error
           retention-days: 30
 
@@ -174,14 +180,16 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Build pve-file-restore-ntfs3g metapackage
-        run: ./scripts/build.sh --component meta 2>&1 | tee build-meta.log
+        run: |
+          mkdir -p dist/meta
+          ./scripts/build.sh --component meta 2>&1 | tee dist/meta/build-meta.log
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: meta
           path: |
-            dist/*.deb
-            dist/SHA256SUMS
-            build-meta.log
+            dist/meta/*.deb
+            dist/meta/SHA256SUMS
+            dist/meta/build-meta.log
           if-no-files-found: error
           retention-days: 30
 

@@ -40,10 +40,13 @@ EOF
 apt-get update -qq
 
 repo_root=$(mktemp -d)
+# APT reads file: repositories as the _apt user; mktemp -d is 0700.
+chmod 0755 "$repo_root"
 gnupg_home="$repo_root/gnupg"
 mkdir -m 0700 "$gnupg_home"
 export GNUPGHOME="$gnupg_home"
-gpg --batch --quick-generate-key 'local apt test <local@example.invalid>' rsa2048 sign 0
+gpg --batch --pinentry-mode loopback --passphrase '' \
+    --quick-generate-key 'local apt test <local@example.invalid>' rsa2048 sign 0
 gpg --batch --export > /usr/share/keyrings/local-apt-test.gpg
 
 mkdir -p "$repo_root/official" "$repo_root/patched"

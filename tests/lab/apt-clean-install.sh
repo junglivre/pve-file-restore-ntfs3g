@@ -26,9 +26,9 @@ step() {
 step 'update the clean Debian package index'
 apt-get update
 step 'install bootstrap tools'
-# cpio: the upstream proxmox-backup-file-restore postinst rebuilds the
-# initramfs cache with it but does not depend on it (PVE nodes always have it).
-apt-get install -y --no-install-recommends ca-certificates curl gnupg cpio
+# cpio is intentionally not installed here: the metapackage must pull it in
+# before the upstream file-restore postinst rebuilds the initramfs cache.
+apt-get install -y --no-install-recommends ca-certificates curl gnupg
 install -d -m 0755 /etc/apt/keyrings
 
 step 'install and configure the MasterMind archive key'

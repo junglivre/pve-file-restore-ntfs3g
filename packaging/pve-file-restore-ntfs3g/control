@@ -4,7 +4,7 @@ Section: admin
 Priority: optional
 Architecture: all
 Maintainer: junglivre <junglivre@users.noreply.github.com>
-Depends: initramfs-tools-core, pve-file-restore-ntfs3g-daemon (>= 2), pve-file-restore-ntfs3g-image (>= 3)
+Depends: cpio, initramfs-tools-core, pve-file-restore-ntfs3g-daemon (>= 2), pve-file-restore-ntfs3g-image (>= 3)
 Description: NTFS-3G File Restore for Proxmox VE (metapackage)
  Pulls in the ntfs-3g-patched Proxmox File Restore packages
  (proxmox-backup-file-restore and proxmox-backup-restore-image) through their

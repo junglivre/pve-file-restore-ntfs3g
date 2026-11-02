@@ -173,6 +173,7 @@ write_report() {
     python3 - "$REPORT" "$WORK/nodes" "$CHECK_ONLY" <<'PY'
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -180,6 +181,23 @@ destination = Path(sys.argv[1])
 nodes_dir = Path(sys.argv[2])
 check_only = sys.argv[3] == "1"
 entries = []
+secret_patterns = [
+    (re.compile(r"(?i)(password|token|secret|authorization)\s*[:=]\s*\S+"), r"\1=[REDACTED]"),
+    (re.compile(r"(?i)-----BEGIN [^-]+ PRIVATE KEY-----.*"), "[REDACTED PRIVATE KEY]"),
+]
+
+def safe_tail(path):
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    result = []
+    for line in lines[-40:]:
+        for pattern, replacement in secret_patterns:
+            line = pattern.sub(replacement, line)
+        result.append(line)
+    return result
+
 for directory in sorted(nodes_dir.iterdir(), key=lambda item: int(item.name)):
     node = (directory / "node").read_text(encoding="utf-8").rstrip("\n")
     status = (directory / "status").read_text(encoding="utf-8").rstrip("\n")
@@ -196,6 +214,8 @@ for directory in sorted(nodes_dir.iterdir(), key=lambda item: int(item.name)):
         "status": status,
         "exit_status": exit_status,
         "check": check,
+        "stdout_tail": safe_tail(directory / "stdout"),
+        "stderr_tail": safe_tail(directory / "stderr"),
     })
 
 report = {

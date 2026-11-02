@@ -29,8 +29,11 @@ Useful modes:
   remote node or writing anything there.
 - `--report FILE` — write a JSON object with one `ACTIVE` or `LOST` entry per
   online node. Each entry includes the command exit status and the check JSON
-  when the node returned one. A failed node is recorded and does not stop the
-  remaining nodes; the command exits non-zero if any node is `LOST`.
+  when the node returned one, plus the last 40 lines of captured
+  `stdout`/`stderr` as `stdout_tail` and `stderr_tail`. A failed node is
+  recorded and does not stop the remaining nodes; the command exits non-zero
+  if any node is `LOST`. Common credential-looking values are redacted before
+  the report is written.
 
 The script selects the highest Debian version available for each component,
 updates APT on the remote node before installing, and then runs
@@ -47,9 +50,22 @@ versions sort higher, e.g. `4.2.8-2 > 4.2.8-1+ntfs3g1`). `apt-mark hold` on
 `proxmox-backup-file-restore` and `proxmox-backup-restore-image` is the only
 thing preventing that.
 
+`--hold` applies that hold after a successful install on every node. It does
+not hold the metapackage. The hold also blocks official fixes to those two
+packages until the next release of this project is installed.
+
 The trade-off: the hold also blocks official fixes to these two packages until
 you install the next release of this project — which is published shortly
 after each Proxmox release (see `docs/automation.md`).
+
+## SSH between PVE 9 nodes
+
+PVE 9 stores each node's SSH host key in the cluster filesystem at
+`/etc/pve/nodes/<node>/ssh_known_hosts`. `cluster-install.sh` uses that file
+with `UserKnownHostsFile`, disables the global known-hosts file, and connects
+with `HostKeyAlias=<node>` (the PVE `SSHInfo` convention). A plain
+`ssh root@<node>` may fail host-key verification even when the cluster itself
+is healthy.
 
 ## Verify
 

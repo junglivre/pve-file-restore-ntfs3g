@@ -76,8 +76,9 @@ make_deb() {
 
 source "$ROOT/scripts/lib-release.sh"
 
-section_notes=$(release_changelog_notes 'file-restore/4.2.8-1+ntfs3g3' test-commit)
-grep -qF 'Version bump' <<<"$section_notes"
+file_restore_version=$(lock_field file-restore version)
+section_notes=$(release_changelog_notes "file-restore/$file_restore_version" test-commit)
+grep -qF 'Rebuilt on the exact upstream' <<<"$section_notes"
 generated_notes=$(release_changelog_notes 'meta/9.9.9' test-commit)
 previous_meta=$(git -C "$ROOT" show HEAD^:upstream.lock 2>/dev/null |
     awk '$1 == "meta" { print $2; exit }' || true)

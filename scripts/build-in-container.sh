@@ -5,10 +5,10 @@
 set -Eeuo pipefail
 
 # Paths: /project, /work and /out are the mount points used by build.sh; CI
-# overrides them with PROJECT_DIR/WORK_DIR/OUTPUT_DIR.
+# overrides them with PROJECT_DIR/WORK_DIR/OUTPUT_ROOT_DIR.
 PROJECT_DIR=${PROJECT_DIR:-/project}
 WORK_DIR=${WORK_DIR:-/work}
-OUTPUT_DIR=${OUTPUT_DIR:-/out}
+OUTPUT_ROOT_DIR=${OUTPUT_ROOT_DIR:-${OUTPUT_DIR:-/out}}
 
 # shellcheck source=./scripts/lib-lock.sh
 source "$PROJECT_DIR/scripts/lib-lock.sh"
@@ -24,7 +24,7 @@ else
     lock_verify_component "$COMPONENT"
 fi
 
-mkdir -p "$WORK_DIR/src" "$WORK_DIR/pkg" "$OUTPUT_DIR"
+mkdir -p "$WORK_DIR/src" "$WORK_DIR/pkg" "$OUTPUT_ROOT_DIR"
 
 export DEBIAN_FRONTEND=noninteractive
 export DEB_BUILD_OPTIONS=nocheck
@@ -87,8 +87,10 @@ add_changelog_entry() {
 }
 
 build_file_restore() {
-    local version
+    local version output_dir
     version=$(lock_field file-restore version)
+    output_dir="$OUTPUT_ROOT_DIR/file-restore"
+    mkdir -p "$output_dir"
 
     rm -rf "$WORK_DIR/src/proxmox-backup"
     patch_prepare_tree file-restore "$WORK_DIR/src/proxmox-backup"
@@ -99,7 +101,7 @@ build_file_restore() {
     (
         cd "$WORK_DIR/src/proxmox-backup"
         make deb-nodoc
-        install -m 0644 "proxmox-backup-file-restore_${version}_amd64.deb" "$OUTPUT_DIR/"
+        install -m 0644 "proxmox-backup-file-restore_${version}_amd64.deb" "$output_dir/"
         # Free the large Rust build tree before other components build.
         make clean-deb
     )
@@ -107,17 +109,19 @@ build_file_restore() {
     # The daemon must contain the ntfs-3g fallback.
     local check_dir
     check_dir=$(mktemp -d)
-    dpkg-deb -x "$OUTPUT_DIR/proxmox-backup-file-restore_${version}_amd64.deb" "$check_dir"
+    dpkg-deb -x "$output_dir/proxmox-backup-file-restore_${version}_amd64.deb" "$check_dir"
     grep -qF 'try FUSE mount using ntfs-3g' \
         < <(strings "$check_dir/usr/lib/x86_64-linux-gnu/proxmox-backup/file-restore/proxmox-restore-daemon")
     rm -rf "$check_dir"
 }
 
 build_restore_image() {
-    local version plugin_version plugin_deb plugin_root
+    local version plugin_version plugin_deb plugin_root output_dir
     version=$(lock_field restore-image version)
     plugin_version=$(lock_field dedup-plugin version)
-    plugin_deb="$OUTPUT_DIR/ntfs-3g-plugin-dedup_${plugin_version}_amd64.deb"
+    output_dir="$OUTPUT_ROOT_DIR/restore-image"
+    mkdir -p "$output_dir"
+    plugin_deb="$OUTPUT_ROOT_DIR/dedup-plugin/ntfs-3g-plugin-dedup_${plugin_version}_amd64.deb"
     [ -f "$plugin_deb" ] || {
         echo "missing packaged dedup plugin: $plugin_deb" >&2
         exit 1
@@ -138,13 +142,13 @@ build_restore_image() {
     (
         cd "$WORK_DIR/src/proxmox-backup-restore-image"
         make deb
-        install -m 0644 "proxmox-backup-restore-image_${version}_amd64.deb" "$OUTPUT_DIR/"
+        install -m 0644 "proxmox-backup-restore-image_${version}_amd64.deb" "$output_dir/"
     )
 
-    # The initramfs must include ntfs-3g and the dedup plugin.
+    # The initramfs must include ntfs-3g and ntfs-3g-dedup-plugin.
     local check_dir initramfs
     check_dir=$(mktemp -d)
-    dpkg-deb -x "$OUTPUT_DIR/proxmox-backup-restore-image_${version}_amd64.deb" "$check_dir"
+    dpkg-deb -x "$output_dir/proxmox-backup-restore-image_${version}_amd64.deb" "$check_dir"
     initramfs="$check_dir/usr/lib/x86_64-linux-gnu/proxmox-backup/file-restore/initramfs.img"
     grep -qx 'usr/bin/ntfs-3g' < <(lsinitramfs "$initramfs")
     grep -qx 'usr/lib/x86_64-linux-gnu/ntfs-3g/ntfs-plugin-80000013.so' < <(lsinitramfs "$initramfs")
@@ -152,8 +156,10 @@ build_restore_image() {
 }
 
 build_dedup_plugin() {
-    local version
+    local version output_dir
     version=$(lock_field dedup-plugin version)
+    output_dir="$OUTPUT_ROOT_DIR/dedup-plugin"
+    mkdir -p "$output_dir"
 
     rm -rf "$WORK_DIR/src/ntfs-3g-dedup-plugin"
     patch_prepare_tree dedup-plugin "$WORK_DIR/src/ntfs-3g-dedup-plugin"
@@ -186,12 +192,14 @@ build_dedup_plugin() {
     source_date_epoch=$(lock_last_change_epoch dedup-plugin)
     export SOURCE_DATE_EPOCH="$source_date_epoch"
     dpkg-deb --root-owner-group --build "$staging" \
-        "$OUTPUT_DIR/ntfs-3g-plugin-dedup_${version}_amd64.deb"
+        "$output_dir/ntfs-3g-plugin-dedup_${version}_amd64.deb"
 }
 
 build_meta() {
-    local version
+    local version output_dir
     version=$(lock_field meta version)
+    output_dir="$OUTPUT_ROOT_DIR/meta"
+    mkdir -p "$output_dir"
 
     local staging="$WORK_DIR/pkg/pve-file-restore-ntfs3g"
     rm -rf "$staging"
@@ -208,7 +216,7 @@ build_meta() {
     source_date_epoch=$(lock_last_change_epoch meta)
     export SOURCE_DATE_EPOCH="$source_date_epoch"
     dpkg-deb --root-owner-group --build "$staging" \
-        "$OUTPUT_DIR/pve-file-restore-ntfs3g_${version}_all.deb"
+        "$output_dir/pve-file-restore-ntfs3g_${version}_all.deb"
 }
 
 case $COMPONENT in
@@ -224,14 +232,22 @@ case $COMPONENT in
         ;;
 esac
 
-(
-    cd "$OUTPUT_DIR"
-    rm -f SHA256SUMS
-    if [ "$COMPONENT" = all ]; then
-        sha256sum ./*.deb > SHA256SUMS
-    else
-        sha256sum "$(lock_package "$COMPONENT")_$(lock_field "$COMPONENT" version)_$(lock_architecture "$COMPONENT").deb" > SHA256SUMS
-    fi
-)
+write_checksum() {
+    local component=$1 package
+    local output_dir
+    output_dir="$OUTPUT_ROOT_DIR/$component"
+    package="$(lock_package "$component")_$(lock_field "$component" version)_$(lock_architecture "$component").deb"
+    (
+        cd "$output_dir"
+        sha256sum -- "$package" > SHA256SUMS
+    )
+}
 
-echo "Build complete. Assets written to $OUTPUT_DIR"
+for component in file-restore restore-image dedup-plugin meta; do
+    case $COMPONENT in
+        all) write_checksum "$component" ;;
+        "$component") write_checksum "$component" ;;
+    esac
+done
+
+echo "Build complete. Assets written below $OUTPUT_ROOT_DIR/<component>/"

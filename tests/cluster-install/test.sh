@@ -109,6 +109,8 @@ assert report['mode'] == 'check'
 assert [item['node'] for item in report['nodes']] == ['pve-a', 'pve-b', 'pve-c']
 assert [item['status'] for item in report['nodes']] == ['ACTIVE', 'LOST', 'ACTIVE']
 assert report['nodes'][1]['exit_status'] != 0
+assert report['nodes'][1]['stdout_tail'] == ['{"ok": false}']
+assert report['nodes'][1]['stderr_tail'] == []
 PY
 
 # Offline input requires one release directory and an individual SHA file per
