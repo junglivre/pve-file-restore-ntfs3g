@@ -21,10 +21,12 @@ kernel="$tmp/restore-image/usr/lib/x86_64-linux-gnu/proxmox-backup/file-restore/
 initrd="$tmp/restore-image/usr/lib/x86_64-linux-gnu/proxmox-backup/file-restore/initramfs.img"
 mkdir "$tmp/inject"
 # The upstream image deliberately omits the daemon. Append a second newc
-# archive with the freshly built daemon, matching the PVE restore path.
+# archive with the freshly built daemon and a ticket, as proxmox-file-restore
+# does: the daemon exits at once when /ticket is missing or empty.
 install -m 0755 \
     "$tmp/file-restore/usr/lib/x86_64-linux-gnu/proxmox-backup/file-restore/proxmox-restore-daemon" \
     "$tmp/inject/proxmox-restore-daemon"
+printf '%s' 'boot-smoke-ticket' > "$tmp/inject/ticket"
 (cd "$tmp/inject" && find . -print0 | cpio --null -o --format=newc) >> "$initrd"
 
 qemu_args=(
@@ -32,7 +34,8 @@ qemu_args=(
     -kernel "$kernel" -initrd "$initrd" -append 'console=ttyS0'
 )
 has_vsock=0
-if [ -e /dev/vhost-vsock ]; then
+# The device can exist without access for this user (root:kvm 0660).
+if [ -r /dev/vhost-vsock ] && [ -w /dev/vhost-vsock ]; then
     qemu_args+=(-device 'vhost-vsock-pci,guest-cid=3')
     has_vsock=1
 fi

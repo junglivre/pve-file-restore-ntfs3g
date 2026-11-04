@@ -32,8 +32,8 @@ mkdir "$fake_bin"
 cat >"$fake_bin/socat" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
-[ "$*" = '- VSOCK-CONNECT:3:807' ]
-cat >/dev/null
+[ "$*" = '-t 5 - VSOCK-CONNECT:3:807' ]
+while IFS= read -r line && [ -n "${line%$'\r'}" ]; do :; done
 printf 'HTTP/1.1 401 Unauthorized\nContent-Length: 0\n\n'
 EOF
 chmod 0755 "$fake_bin/socat"

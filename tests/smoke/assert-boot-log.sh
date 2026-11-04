@@ -8,11 +8,16 @@ usage() {
 
 [ "${1:-}" = '--handshake' ] && {
     [ "$#" -eq 1 ] || usage
-    response=$(printf '%s\n' \
-        'GET /api2/json/status HTTP/1.1' \
-        'Host: localhost' \
-        'Connection: close' \
-        '' | socat - VSOCK-CONNECT:3:807)
+    # Keep the write side open: socat shuts it down at the end of its input,
+    # and the daemon's HTTP server drops a half-closed connection unanswered.
+    response=$({
+        printf '%s\r\n' \
+            'GET /api2/json/status HTTP/1.1' \
+            'Host: localhost' \
+            'Connection: close' \
+            ''
+        sleep 5
+    } | socat -t 5 - VSOCK-CONNECT:3:807)
     if ! grep -Eq '^HTTP/[0-9.]+[[:space:]]+[0-9]{3}([[:space:]]|$)' <<<"$response"; then
         echo 'vsock handshake returned no HTTP status line' >&2
         exit 1

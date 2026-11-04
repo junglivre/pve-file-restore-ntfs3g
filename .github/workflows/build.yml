@@ -301,4 +301,5 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends cpio qemu-system-x86 qemu-utils initramfs-tools-core binutils socat
           if [ -e /dev/kvm ]; then sudo chmod 666 /dev/kvm; fi
+          if [ -e /dev/vhost-vsock ]; then sudo chmod 666 /dev/vhost-vsock; fi
           tests/smoke/run.sh artifacts

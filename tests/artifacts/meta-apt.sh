@@ -58,13 +58,14 @@ mkdir -p "$repo_root/official" "$repo_root/patched"
 cp "$fr" "$ri" "$meta" "$repo_root/patched/"
 
 make_repo() {
-    local repo=$1
+    local repo=$1 origin=$2
     (cd "$repo" && dpkg-scanpackages . /dev/null > Packages && gzip -9c Packages > Packages.gz)
-    (cd "$repo" && apt-ftparchive release . > Release && gpg --batch --yes --clearsign \
-        --output InRelease Release)
+    (cd "$repo" && apt-ftparchive -o "APT::FTPArchive::Release::Origin=$origin" release . \
+        > Release && gpg --batch --yes --clearsign --output InRelease Release)
 }
-make_repo "$repo_root/official"
-make_repo "$repo_root/patched"
+make_repo "$repo_root/official" local-official
+# Same origin as the MasterMind APT repository, which nodes install from.
+make_repo "$repo_root/patched" MasterMind
 cat >/etc/apt/sources.list.d/local-apt-test.list <<EOF
 deb [signed-by=/usr/share/keyrings/local-apt-test.gpg] file:$repo_root/official ./
 EOF
@@ -81,6 +82,14 @@ echo 'meta negative dependency check passed: both virtual package names were unm
 
 cat >>/etc/apt/sources.list.d/local-apt-test.list <<EOF
 deb [signed-by=/usr/share/keyrings/local-apt-test.gpg] file:$repo_root/patched ./
+EOF
+# The pin mastermind-apt-config installs (MasterMindTIBR/apt): without it,
+# apt picks a newer official version from the Proxmox repository (e.g. a
+# restore image released after our lock), which provides no feature level.
+cat >/etc/apt/preferences.d/mastermind.pref <<'EOF'
+Package: proxmox-backup-file-restore proxmox-backup-restore-image
+Pin: release o=MasterMind
+Pin-Priority: 990
 EOF
 apt-get update -qq
 apt-get install -y --no-install-recommends pve-file-restore-ntfs3g
