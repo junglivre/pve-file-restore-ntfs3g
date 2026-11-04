@@ -288,7 +288,10 @@ jobs:
         if: needs.changes.outputs.fixture == 'true'
         run: |
           set -euo pipefail
+          # ntfs-3g mounts through FUSE; Docker's default AppArmor profile
+          # denies mount even with SYS_ADMIN.
           docker run --rm --device /dev/fuse --cap-add SYS_ADMIN \
+            --security-opt apparmor=unconfined \
             -v "$PWD/artifacts:/artifacts:ro" \
             -v "$PWD/fixture-assets:/fixtures:ro" \
             -v "$PWD/tests:/tests:ro" \
