@@ -20,9 +20,13 @@ dpkg-deb -x "$restore_image" "$tmp/image"
 initramfs="$tmp/image/usr/lib/x86_64-linux-gnu/proxmox-backup/file-restore/initramfs.img"
 [ -f "$initramfs" ] || { echo "restore image lacks initramfs.img" >&2; exit 1; }
 
-count=$(lsinitramfs "$initramfs" | awk -v path="$plugin_path" '$0 == path { count++ } END { print count + 0 }')
+# One plain newc archive; plain cpio reads it on every runner (see
+# restore-image.sh for why not lsinitramfs/unmkinitramfs).
+listing=$(cpio -it --quiet < "$initramfs")
+count=$(awk -v path="$plugin_path" '$0 == path { count++ } END { print count + 0 }' <<<"$listing")
 [ "$count" -eq 1 ] || { echo "expected exactly one $plugin_path in initramfs, got $count" >&2; exit 1; }
-unmkinitramfs "$initramfs" "$tmp/initramfs"
+mkdir "$tmp/initramfs"
+(cd "$tmp/initramfs" && cpio -id --quiet -- "$plugin_path" < "$initramfs")
 mapfile -t embedded < <(find "$tmp/initramfs" -type f -path "*/$plugin_path" -print)
 [ "${#embedded[@]}" -eq 1 ] || {
     echo "expected exactly one extracted $plugin_path, got ${#embedded[@]}" >&2

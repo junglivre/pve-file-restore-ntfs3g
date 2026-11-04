@@ -18,7 +18,9 @@ trap 'rm -rf "$tmp"' EXIT
 dpkg-deb -x "$deb" "$tmp"
 initramfs="$tmp/usr/lib/x86_64-linux-gnu/proxmox-backup/file-restore/initramfs.img"
 [ -r "$initramfs" ] || { echo "missing restore initramfs in $deb" >&2; exit 1; }
-listing=$(lsinitramfs "$initramfs")
+# The image is one plain newc archive. lsinitramfs from older initramfs-tools
+# (the Ubuntu 24.04 runner) stops on it with "premature end of archive".
+listing=$(cpio -it --quiet < "$initramfs")
 grep -qx 'usr/bin/ntfs-3g' <<<"$listing"
 grep -qx 'usr/lib/x86_64-linux-gnu/ntfs-3g/ntfs-plugin-80000013.so' <<<"$listing"
 grep -qF 'libfuse3' <<<"$listing"
