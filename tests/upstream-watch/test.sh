@@ -126,6 +126,10 @@ configure_sandbox() {
     # The watcher runs on master; a pull request checkout is a detached merge
     # commit without a local master branch.
     "$REAL_GIT" -C "$sandbox" checkout -q -B master
+    # upstream-watch.yml sets the commit identity before running the watcher;
+    # a CI runner has none of its own.
+    "$REAL_GIT" -C "$sandbox" config user.email test@example.invalid
+    "$REAL_GIT" -C "$sandbox" config user.name test
     remote="$TMP/remote-$(basename "$sandbox")"
     "$REAL_GIT" init --bare -q "$remote"
     "$REAL_GIT" -C "$sandbox" remote set-url origin "$remote"
