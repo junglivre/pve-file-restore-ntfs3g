@@ -98,7 +98,20 @@ jobs:
     runs-on: ubuntu-24.04
     container:
       image: debian:13@sha256:4c25275446ca371766b8b093c696782eabce06263fccacb8d5d813b3dc44b308
+      # The Rust build can fill the runner's root disk ("No space left on
+      # device"). These preinstalled host toolchains are unused here; they are
+      # mounted only so the first step can delete them.
+      options: >-
+        -v /usr/local/lib/android:/host-unused/android
+        -v /usr/share/dotnet:/host-unused/dotnet
+        -v /opt/ghc:/host-unused/ghc
+        -v /opt/hostedtoolcache/CodeQL:/host-unused/codeql
     steps:
+      - name: Free runner disk space
+        run: |
+          df -h /
+          find /host-unused -mindepth 2 -maxdepth 2 -exec rm -rf {} +
+          df -h /
       # git must exist inside the container before actions/checkout can run.
       - name: Install git (needed by checkout inside the container)
         run: |
