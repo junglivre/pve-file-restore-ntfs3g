@@ -6,6 +6,9 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 SANDBOX="$TMP/repo"
 cp -a "$ROOT/." "$SANDBOX"
+# The baseline commit below needs a fresh repository: a copied clean checkout
+# (as in CI) has nothing left to commit.
+rm -rf "$SANDBOX/.git"
 
 "$SANDBOX/scripts/lib-lock.sh" verify > "$TMP/verify.out"
 grep -qF 'upstream.lock verification passed' "$TMP/verify.out"

@@ -123,6 +123,9 @@ make_fallback_upstream() {
 configure_sandbox() {
     local sandbox=$1 upstream=$2 release_commit=$3 remote
     cp -a "$ROOT/." "$sandbox"
+    # The watcher runs on master; a pull request checkout is a detached merge
+    # commit without a local master branch.
+    "$REAL_GIT" -C "$sandbox" checkout -q -B master
     remote="$TMP/remote-$(basename "$sandbox")"
     "$REAL_GIT" init --bare -q "$remote"
     "$REAL_GIT" -C "$sandbox" remote set-url origin "$remote"
