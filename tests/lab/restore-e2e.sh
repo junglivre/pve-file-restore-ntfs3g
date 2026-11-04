@@ -50,10 +50,12 @@ if [ "$copy_status" -ne 0 ]; then
     exit "$copy_status"
 fi
 
-# ssh does not pass the environment: the restore selection goes as arguments.
+# ssh does not pass the environment: the restore selection goes as arguments,
+# "-" for automatic (ssh joins the arguments into one line, so an empty one
+# would disappear).
 ssh -F "$ssh_config" "$node" bash -s -- "$pbs_storage" "$backup_volid" \
     "$remote_manifest" "$remote_dedup_files" "$remote_large_files" \
-    "${PVE_RESTORE_ARCHIVE:-}" "${PVE_RESTORE_PARTITION:-}" <<'EOF'
+    "${PVE_RESTORE_ARCHIVE:--}" "${PVE_RESTORE_PARTITION:--}" <<'EOF'
 set -Eeuo pipefail
 pbs_storage=$1
 backup_volid=$2
@@ -62,6 +64,8 @@ dedup_file_list=$4
 large_file_list=$5
 restore_archive=$6
 restore_partition=$7
+[ "$restore_archive" != - ] || restore_archive=''
+[ "$restore_partition" != - ] || restore_partition=''
 output_dir=$(mktemp -d)
 storage_block=''
 trap 'rm -rf "$output_dir" "$(dirname "$manifest")"' EXIT
