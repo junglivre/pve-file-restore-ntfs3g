@@ -120,7 +120,7 @@ restore_image_variant=false
 if is_patched_version "$restore_image_version" \
     && has_provide "$restore_image_provides" \
         "proxmox-backup-restore-image-ntfs3g (= $restore_image_version)" \
-    && has_provide "$restore_image_provides" 'pve-file-restore-ntfs3g-image (= 3)'; then
+    && has_provide "$restore_image_provides" 'pve-file-restore-ntfs3g-image (= 4)'; then
     restore_image_variant=true
 fi
 if $restore_image_variant && [ -r "$IMAGE_INITRAMFS" ]; then

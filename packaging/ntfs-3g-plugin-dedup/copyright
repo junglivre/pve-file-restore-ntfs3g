@@ -13,6 +13,10 @@ License: GPL-2.0-only
  On Debian systems, the full text of the GNU General Public License version
  2 can be found in /usr/share/common-licenses/GPL-2.
  .
- This package applies a patch (patches/ntfs-3g-dedup-plugin-fuse3.patch in
- https://github.com/junglivre/pve-file-restore-ntfs3g) that ports the plugin
- to FUSE 3 and drops the optional .NET hosting path.
+ This package applies two patches from
+ https://github.com/junglivre/pve-file-restore-ntfs3g:
+ patches/ntfs-3g-dedup-plugin-fuse3.patch ports the plugin to FUSE 3 and drops
+ the optional .NET hosting path; patches/ntfs-3g-dedup-plugin-large-files.patch
+ reads files of any size, checks every chunk against its SHA-512 digest, and
+ fails with EIO instead of returning wrong or truncated data. The patches are
+ under the same license as the plugin.

@@ -1,0 +1,1261 @@
+From 09dab18e91570044eb142eeb696a7a7a1bf2b6ac Mon Sep 17 00:00:00 2001
+From: junglivre <junglivre@users.noreply.github.com>
+Date: Tue, 3 Nov 2026 22:41:38 -0300
+Subject: [PATCH] Read big deduplicated files correctly, fail with EIO
+ otherwise
+
+The stream map of a file lists one entry per chunk, about 1400 for
+100 MiB. Only the first MAXSMAP (512) entries were looked at for the
+start of a read, so a read crossing the end of that window came back
+short. The kernel takes a short read as the end of file: files over
+about 37 MiB were silently truncated, or zero-filled when the size was
+refreshed later, and no error was ever reported.
+
+- read the stream map through a window of MAXSMAP entries that moves
+  along with the read, after a dichotomic search for the first entry
+- check every chunk against its stream map entry: the entry records
+  the first 32 bytes of the SHA-512 of the uncompressed chunk
+- check the stream map itself: increasing data ends, chunks of at most
+  128K, inside the part, covering the whole read
+- bound the decompressor reads to the compressed buffer
+- read every data entry of format 0x0103 instead of only the first
+- return EIO when any of this fails, and never a short count before
+  the end of file
+- keep the last checked chunk, most reads begin where the previous one
+  ended
+---
+ src/dedup.c | 996 +++++++++++++++++++++++++++++-----------------------
+ 1 file changed, 561 insertions(+), 435 deletions(-)
+
+diff --git a/src/dedup.c b/src/dedup.c
+index e043715..bbee7fb 100755
+--- a/src/dedup.c
++++ b/src/dedup.c
+@@ -51,9 +51,16 @@
+  *
+  *		Version 1.2.6, May 2026
+  *	- treat dedup format 0x0103 like 0x0102 (seen on Windows Server 2019)
++ *
++ *		Version 1.3.0, Nov 2026
++ *	- read stream maps of more than MAXSMAP chunks through a moving
++ *	  window, files over about 37MB were silently truncated or zeroed
++ *	- check every chunk against the SHA-512 digest in its stream map
++ *	- return EIO instead of a short count or unchecked data
++ *	- read every data entry of format 0x0103
+  */
+ 
+-#define DEDUP_VERSION "1.2.6"
++#define DEDUP_VERSION "1.3.0"
+ 
+ #include "config.h"
+ 
+@@ -97,7 +104,7 @@
+ #define RRTL_MAGIC const_cpu_to_le32(0x6c747252) /* "Rrtl" */
+ 
+ #define MAXMEM 0x20000 /* Max buffer size */
+-#define MAXSMAP 512 /* Max smap chunk cnt (MAXSMAP*64 + 0x68 < MAXMEM) */
++#define MAXSMAP 512 /* Stream map entries read at once (MAXSMAP*64 < MAXMEM) */
+ #define MAXPATHSTORE 256 /* The real limit is less than 120 */
+ #define MAXFILESTORE 32 /* The real limit is 21 */
+ 
+@@ -328,54 +335,127 @@ static le32 crc32(const u8 *b, int n)
+ }
+ 
+ /*
+- *		Fetch a smap when it is not in the initial list.
++ *		SHA-512 (FIPS 180-4)
+  *
+- *	Owing to the limit set on buffer allocation, we may have to
+- *	split big arrays of smaps. This function reuses the buffer
+- *	while looking for the needed smap.
++ *	A stream map entry records the first 32 bytes of the SHA-512
++ *	digest of the uncompressed chunk, so every chunk can be checked
++ *	before its data is returned.
+  */
+ 
+-static int dedup_fetch_further(ntfs_attr *na_stream, char *buf_stream,
+-				u32 offset_stream, off_t offset, int smap_cnt)
++#define SHA512_ROR(x,n) (((x) >> (n)) | ((x) << (64 - (n))))
++
++static const u64 sha512_init[8] = {
++	0x6a09e667f3bcc908ULL, 0xbb67ae8584caa73bULL,
++	0x3c6ef372fe94f82bULL, 0xa54ff53a5f1d36f1ULL,
++	0x510e527fade682d1ULL, 0x9b05688c2b3e6c1fULL,
++	0x1f83d9abfb41bd6bULL, 0x5be0cd19137e2179ULL
++} ;
++
++static const u64 sha512_k[80] = {
++	0x428a2f98d728ae22ULL, 0x7137449123ef65cdULL,
++	0xb5c0fbcfec4d3b2fULL, 0xe9b5dba58189dbbcULL,
++	0x3956c25bf348b538ULL, 0x59f111f1b605d019ULL,
++	0x923f82a4af194f9bULL, 0xab1c5ed5da6d8118ULL,
++	0xd807aa98a3030242ULL, 0x12835b0145706fbeULL,
++	0x243185be4ee4b28cULL, 0x550c7dc3d5ffb4e2ULL,
++	0x72be5d74f27b896fULL, 0x80deb1fe3b1696b1ULL,
++	0x9bdc06a725c71235ULL, 0xc19bf174cf692694ULL,
++	0xe49b69c19ef14ad2ULL, 0xefbe4786384f25e3ULL,
++	0x0fc19dc68b8cd5b5ULL, 0x240ca1cc77ac9c65ULL,
++	0x2de92c6f592b0275ULL, 0x4a7484aa6ea6e483ULL,
++	0x5cb0a9dcbd41fbd4ULL, 0x76f988da831153b5ULL,
++	0x983e5152ee66dfabULL, 0xa831c66d2db43210ULL,
++	0xb00327c898fb213fULL, 0xbf597fc7beef0ee4ULL,
++	0xc6e00bf33da88fc2ULL, 0xd5a79147930aa725ULL,
++	0x06ca6351e003826fULL, 0x142929670a0e6e70ULL,
++	0x27b70a8546d22ffcULL, 0x2e1b21385c26c926ULL,
++	0x4d2c6dfc5ac42aedULL, 0x53380d139d95b3dfULL,
++	0x650a73548baf63deULL, 0x766a0abb3c77b2a8ULL,
++	0x81c2c92e47edaee6ULL, 0x92722c851482353bULL,
++	0xa2bfe8a14cf10364ULL, 0xa81a664bbc423001ULL,
++	0xc24b8b70d0f89791ULL, 0xc76c51a30654be30ULL,
++	0xd192e819d6ef5218ULL, 0xd69906245565a910ULL,
++	0xf40e35855771202aULL, 0x106aa07032bbd1b8ULL,
++	0x19a4c116b8d2d0c8ULL, 0x1e376c085141ab53ULL,
++	0x2748774cdf8eeb99ULL, 0x34b0bcb5e19b48a8ULL,
++	0x391c0cb3c5c95a63ULL, 0x4ed8aa4ae3418acbULL,
++	0x5b9cca4f7763e373ULL, 0x682e6ff3d6b2b8a3ULL,
++	0x748f82ee5defb2fcULL, 0x78a5636f43172f60ULL,
++	0x84c87814a1f0ab72ULL, 0x8cc702081a6439ecULL,
++	0x90befffa23631e28ULL, 0xa4506cebde82bde9ULL,
++	0xbef9a3f7b2c67915ULL, 0xc67178f2e372532bULL,
++	0xca273eceea26619cULL, 0xd186b8c721c0c207ULL,
++	0xeada7dd6cde0eb1eULL, 0xf57d4f7fee6ed178ULL,
++	0x06f067aa72176fbaULL, 0x0a637dc5a2c898a6ULL,
++	0x113f9804bef90daeULL, 0x1b710b35131c471bULL,
++	0x28db77f523047d84ULL, 0x32caab7b40c72493ULL,
++	0x3c9ebe0a15c9bebcULL, 0x431d67c49c100d4cULL,
++	0x4cc5d4becb3e42b6ULL, 0x597f299cfc657e2aULL,
++	0x5fcb6fab3ad6faecULL, 0x6c44198c4a475817ULL
++} ;
++
++static void sha512_block(u64 *h, const u8 *p)
+ {
+-	struct DEDUP_CKHR_STREAM *ckhr_stream;
+-	struct DEDUP_SMAP *smap_stream;
+-	struct DEDUP_SMAP_ENTRY *smap_entry;
+-	int offset_entries;
+-	int first_smap;
+-	int more_smaps;
+-	int r;
+-	BOOL ok;
++	u64 w[80];
++	u64 a, b, c, d, e, f, g, k;
++	u64 t1, t2;
++	int i, j;
++
++	for (i=0; i<16; i++) {
++		w[i] = 0;
++		for (j=0; j<8; j++)
++			w[i] = (w[i] << 8) | p[8*i + j];
++	}
++	for (i=16; i<80; i++)
++		w[i] = (SHA512_ROR(w[i-2], 19) ^ SHA512_ROR(w[i-2], 61)
++				^ (w[i-2] >> 6))
++			+ w[i-7]
++			+ (SHA512_ROR(w[i-15], 1) ^ SHA512_ROR(w[i-15], 8)
++				^ (w[i-15] >> 7))
++			+ w[i-16];
++	a = h[0]; b = h[1]; c = h[2]; d = h[3];
++	e = h[4]; f = h[5]; g = h[6]; k = h[7];
++	for (i=0; i<80; i++) {
++		t1 = k + (SHA512_ROR(e, 14) ^ SHA512_ROR(e, 18)
++				^ SHA512_ROR(e, 41))
++			+ ((e & f) ^ (~e & g)) + sha512_k[i] + w[i];
++		t2 = (SHA512_ROR(a, 28) ^ SHA512_ROR(a, 34)
++				^ SHA512_ROR(a, 39))
++			+ ((a & b) ^ (a & c) ^ (b & c));
++		k = g; g = f; f = e; e = d + t1;
++		d = c; c = b; b = a; a = t1 + t2;
++	}
++	h[0] += a; h[1] += b; h[2] += c; h[3] += d;
++	h[4] += e; h[5] += f; h[6] += g; h[7] += k;
++}
+ 
+-	ckhr_stream = (struct DEDUP_CKHR_STREAM*)buf_stream;
+-	smap_stream = (struct DEDUP_SMAP*)&buf_stream[0x68];
+-	smap_entry = &smap_stream->entry[MAXSMAP - 1];
+-	first_smap = 0;
+-	if (offset >= (off_t)le64_to_cpu(smap_entry->data_end)) {
+-		do {
+-			/*
+-			 * entry[MAXSMAP - 1] is read again as entry[0],
+-			 * so that the needed entry is not the first one
+-			 */
+-			first_smap += MAXSMAP - 1;
+-			more_smaps = smap_cnt - first_smap;
+-			if (more_smaps > MAXSMAP)
+-				more_smaps = MAXSMAP;
+-			offset_entries = sizeof(struct DEDUP_CKHR_STREAM)
+-					+ offsetof(struct DEDUP_SMAP, entry);
+-			r = ntfs_attr_pread(na_stream,
+-				first_smap*sizeof(struct DEDUP_SMAP_ENTRY)
+-					+ offset_stream + offset_entries,
+-				more_smaps*sizeof(struct DEDUP_SMAP_ENTRY),
+-				buf_stream + offset_entries);
+-			ok = ((first_smap + more_smaps) >= smap_cnt)
+-				|| (more_smaps < MAXSMAP)
+-				|| ((off_t)le64_to_cpu(smap_entry->data_end)
+-					> offset);
+-		} while (!ok);
+-	} else
+-		ok = TRUE;
+-	return (ok);
++static void sha512(const u8 *data, size_t len, u8 *digest)
++{
++	u64 h[8];
++	u8 last[256];
++	size_t done;
++	size_t rest;
++	size_t tail;
++	u64 bits;
++	int i;
++
++	memcpy(h, sha512_init, sizeof(h));
++	for (done=0; (len - done) >= 128; done += 128)
++		sha512_block(h, data + done);
++	rest = len - done;
++	tail = (rest < 112 ? 128 : 256);
++	memset(last, 0, sizeof(last));
++	memcpy(last, data + done, rest);
++	last[rest] = 0x80;
++		/* bit count, the high 64 bits are always zero here */
++	bits = (u64)len << 3;
++	for (i=0; i<8; i++)
++		last[tail - 1 - i] = (u8)(bits >> (8*i));
++	sha512_block(h, last);
++	if (tail == 256)
++		sha512_block(h, last + 128);
++	for (i=0; i<64; i++)
++		digest[i] = (u8)(h[i >> 3] >> (56 - 8*(i & 7)));
+ }
+ 
+ /*
+@@ -551,7 +631,8 @@ static u32 search_index_stream(ntfs_attr *na, const le32 num)
+ }
+ 
+ /*
+- *		Fetch the ckhr and smap which describe the needed chunk.
++ *		Locate the stream map (a Ckhr record followed by a Smap record)
++ *	designated by a reparse entry.
+  *
+  *	First try direct access to offset recorded in the reparse entry.
+  *	If it fails, try indexed search.
+@@ -560,203 +641,120 @@ static u32 search_index_stream(ntfs_attr *na, const le32 num)
+  *	When the file is updated, a new index entry is inserted, but
+  *	the reparse entry is not, so an index search is required.
+  *
+- *	Returns TRUE is the smap is found.
++ *	Returns the offset of the Ckhr record in the Stream file,
++ *		or zero if not found (the file header is at offset zero).
+  */
+-static BOOL dedup_fetch_ckhr(ntfs_inode *ni_stream,
+-			const struct DEDUP_REPARSE_ENTRY *reparse_entry,
+-			char *buf_stream, u32 size_stream,
+-			off_t offset)
++
++static u32 dedup_locate_smap(ntfs_attr *na_stream,
++			const struct DEDUP_REPARSE_ENTRY *reparse_entry)
+ {
+-	ntfs_attr *na_stream;
++	struct {
++		struct DEDUP_CKHR_STREAM ckhr;
++		le32 smap_magic;
++		le32 smap_unknown1;
++	} head;
+ 	u32 offset_stream;
+-	struct DEDUP_CKHR_STREAM *ckhr_stream;
+-	struct DEDUP_SMAP *smap_stream;
+-	int smap_cnt;
+-	int r;
+-	BOOL ok;
++	int attempt;
+ 
+-	na_stream = ntfs_attr_open(ni_stream, AT_DATA, (ntfschar*)NULL, 0);
+-	if (na_stream) {
+-		ok = FALSE;
+-		ckhr_stream = (struct DEDUP_CKHR_STREAM*)buf_stream;
+-		smap_stream = (struct DEDUP_SMAP*)&buf_stream[0x68];
+-		offset_stream = le32_to_cpu(reparse_entry->offset);
+-		r = ntfs_attr_pread(na_stream, offset_stream,
+-						size_stream, buf_stream);
+-		if ((r == (int)size_stream)
+-		    && (ckhr_stream->magic == CKHR_MAGIC)
+-		    && (ckhr_stream->payload_size == reparse_entry->size_smap)
+-		    && !memcmp(ckhr_stream->digest, reparse_entry->digest,16)
+-		    && (smap_stream->magic == SMAP_MAGIC))
+-			ok = TRUE;
+-		else {
++	offset_stream = le32_to_cpu(reparse_entry->offset);
++	for (attempt=0; attempt<2; attempt++) {
++		if (attempt)
+ 			offset_stream = search_index_stream(na_stream,
+ 						reparse_entry->num);
+-			r = ntfs_attr_pread(na_stream,
+-						offset_stream,
+-						size_stream, buf_stream);
+-			if ((r == (int)size_stream)
+-			    && (ckhr_stream->magic == CKHR_MAGIC)
+-			    && (ckhr_stream->payload_size
+-					== reparse_entry->size_smap)
+-			    && !memcmp(ckhr_stream->digest,
+-					reparse_entry->digest,16)
+-			    && (smap_stream->magic == SMAP_MAGIC)) {
+-				ok = TRUE;
+-			}
+-		}
+-		if (ok) {
+-			smap_cnt = le32_to_cpu(reparse_entry->size_smap)
+-				/sizeof(struct DEDUP_SMAP_ENTRY);
+-			if (smap_cnt > MAXSMAP) {
+-				ok = dedup_fetch_further(na_stream, buf_stream,
+-							offset_stream,
+-							offset, smap_cnt);
+-			}
+-		} else {
+-			ntfs_log_error("Bad stream"
+-				" for offset 0x%llx"
+-				" in Stream %lld\n",
+-				(long long)offset,
+-				(long long)ni_stream->mft_no);
+-		}
+-		ntfs_attr_close(na_stream);
++		if (offset_stream
++		    && (ntfs_attr_pread(na_stream, offset_stream,
++				sizeof(head), &head) == (s64)sizeof(head))
++		    && (head.ckhr.magic == CKHR_MAGIC)
++		    && (head.ckhr.payload_size == reparse_entry->size_smap)
++		    && !memcmp(head.ckhr.digest, reparse_entry->digest, 16)
++		    && (head.smap_magic == SMAP_MAGIC))
++			return (offset_stream);
+ 	}
+-	return (ok);
++	return (0);
+ }
+ 
+-
+ /*
+- *		Fetch a Stream and the smap which describes the needed chunk.
++ *		Open the Stream file designated by a reparse entry
+  *
+- *	Returns a buffer containing the Stream header (Ckhr) and a set of
+- *	smaps (at least the one starting at the requested offset).
+- *	Returns NULL if the needed smap could not be found.
++ *	Returns an opened inode, or NULL if not found (failure logged)
+  */
+ 
+-static char *dedup_fetch_stream(ntfs_volume *vol, const char *guid,
+-			const struct DEDUP_REPARSE_ENTRY *reparse_entry,
+-			off_t offset)
++static ntfs_inode *dedup_open_stream(ntfs_volume *vol, const char *guid,
++			u32 id)
+ {
+ 	char path[MAXPATHSTORE];
+ 	ntfschar name_stream[MAXFILESTORE];
+-	char *buf_stream;
+ 	ntfs_inode *dirni_stream;
+ 	ntfs_inode *ni_stream;
+-	u32 size_stream;
+-	int smap_cnt;
+-	BOOL ok;
+ 
+-	ok = FALSE;
+-
+-	if ((le32_to_cpu(reparse_entry->size_smap) - 8)
+-			% sizeof(struct DEDUP_SMAP_ENTRY)) {
+-		ntfs_log_error("Not an integral count of Smap entries"
+-				" (size %ld)\n",
+-				(long)le32_to_cpu(reparse_entry->size_smap));
+-	}
+-	smap_cnt = le32_to_cpu(reparse_entry->size_smap)
+-			/sizeof(struct DEDUP_SMAP_ENTRY);
+-	if (smap_cnt <= MAXSMAP) {
+-		size_stream = le32_to_cpu(reparse_entry->size_smap)
+-				+ sizeof(struct DEDUP_CKHR_STREAM);
+-	} else {
+-		size_stream = MAXSMAP*sizeof(struct DEDUP_SMAP_ENTRY)
+-				+ sizeof(struct DEDUP_CKHR_STREAM)
+-				+ offsetof(struct DEDUP_SMAP, entry);
+-	}
+-	buf_stream = (char*)malloc_maxed(size_stream,__LINE__);
+-	if (buf_stream) {
+-		snprintf(path,MAXPATHSTORE,
+-				"%s/%s/%s/{%s}.ddp/%s",
+-				"System Volume Information",
+-				"Dedup",
+-				"ChunkStore",
+-				guid,
+-				"Stream");
+-		dirni_stream = ntfs_pathname_to_inode(vol,
+-				(ntfs_inode*)NULL,path);
+-		ni_stream = (ntfs_inode*)NULL;
+-		if (dirni_stream) {
+-			ni_stream = dedup_lookup_name(dirni_stream,
+-				le32_to_cpu(reparse_entry->id),
+-				name_stream);
+-			ntfs_inode_close(dirni_stream);
+-		}
+-		if (ni_stream) {
+-			ok = dedup_fetch_ckhr(ni_stream, reparse_entry,
+-				buf_stream, size_stream, offset);
+-			ntfs_inode_close(ni_stream);
+-		} else {
+-			ntfs_log_error("Failed to open a dedup stream"
+-				" %08lx.*.ccc in directory %s\n",
+-				(long)le32_to_cpu(reparse_entry->id), path);
+-		}
+-	}
+-	if (!ok) {
+-		free(buf_stream);
+-		buf_stream = (char*)NULL;
++	ni_stream = (ntfs_inode*)NULL;
++	snprintf(path,MAXPATHSTORE,
++			"%s/%s/%s/{%s}.ddp/%s",
++			"System Volume Information",
++			"Dedup",
++			"ChunkStore",
++			guid,
++			"Stream");
++	dirni_stream = ntfs_pathname_to_inode(vol, (ntfs_inode*)NULL, path);
++	if (dirni_stream) {
++		ni_stream = dedup_lookup_name(dirni_stream, id, name_stream);
++		ntfs_inode_close(dirni_stream);
+ 	}
+-	return (buf_stream);
++	if (!ni_stream)
++		ntfs_log_error("Failed to open a dedup stream"
++			" %08lx.*.ccc in directory %s\n", (long)id, path);
++	return (ni_stream);
+ }
+ 
+ /*
+- *		Read an uncompressed chunk of data
++ *		Read consecutive stream map entries
+  *
+- *	Reading is interrupted at the end of the initial chunk. A new
+- *	request has to be made to get the end (which may be located in
+- *	a different file or compressed).
+- *
+- *	Returns a non-negative count of bytes read,
+- *		or a negative error code.
++ *	Returns TRUE if all of them could be read
+  */
+ 
+-static int dedup_pread_data(ntfs_attr *na_data, off_t offset, u32 data_offset,
+-			const struct DEDUP_SMAP_ENTRY *smap_entry,
+-			size_t size, char *buf)
++static BOOL dedup_read_smaps(ntfs_attr *na_stream, u32 entries_offset,
++			u32 first, u32 count, struct DEDUP_SMAP_ENTRY *entries)
+ {
+-	struct DEDUP_CKHR_DATA ckhr_data;
+-	size_t read_size;
+-	s32 available_size;
+-	int r;
+-	int res;
++	s64 size;
+ 
+-	res = -1;
+-	r = ntfs_attr_pread(na_data, data_offset,
+-				sizeof(struct DEDUP_CKHR_DATA), &ckhr_data);
+-	if ((r == sizeof(struct DEDUP_CKHR_DATA))
+-	    && (ckhr_data.magic == CKHR_MAGIC)
+-	    && (ckhr_data.payload_size == smap_entry->data_size)
+-	    && !memcmp(ckhr_data.digest, smap_entry->digest, 32)) {
+-		available_size = le32_to_cpu(ckhr_data.payload_size) - offset;
+-		if (available_size > 0) {
+-			read_size = available_size;
+-			if (read_size > size)
+-				read_size = size;
+-			r = ntfs_attr_pread(na_data,
+-				data_offset + sizeof(struct DEDUP_CKHR_DATA)
+-					+ offset, read_size, buf);
+-			if (r == (int)read_size)
+-				res = read_size;
+-		} else {
+-			ntfs_log_error("Data at offset 0x%llx"
+-					" is not within chunk at 0x%llx"
+-					" in file %lld\n",
+-					(long long)offset,
+-					(long long)data_offset,
+-					(long long)na_data->ni->mft_no);
+-			res = -EIO;
+-		}
+-	} else {
+-		ntfs_log_error("Bad Ckhr data header at 0x%llx"
+-				" for offset 0x%llx"
+-				" in file %lld\n",
+-				(long long)data_offset,
+-				(long long)offset,
+-				(long long)na_data->ni->mft_no);
+-		res = -EIO;
++	size = (s64)count*sizeof(struct DEDUP_SMAP_ENTRY);
++	return (ntfs_attr_pread(na_stream, entries_offset
++			+ (s64)first*sizeof(struct DEDUP_SMAP_ENTRY),
++			size, entries) == size);
++}
++
++/*
++ *		Find the first stream map entry whose data ends beyond an offset
++ *
++ *	The entries are ordered by data end, so do a dichotomic search,
++ *	reading one entry at a time. A wrong order is caught later, when
++ *	checking that the offset is within the chunk found.
++ *
++ *	Returns the index of the entry, smap_cnt if there is none,
++ *		or -1 if an entry could not be read.
++ */
++
++static s32 dedup_find_smap(ntfs_attr *na_stream, u32 entries_offset,
++			u32 smap_cnt, u64 offset)
++{
++	struct DEDUP_SMAP_ENTRY smap_entry;
++	u32 lower;
++	u32 upper;
++	u32 middle;
++
++	lower = 0;
++	upper = smap_cnt;
++	while (lower < upper) {
++		middle = lower + ((upper - lower) >> 1);
++		if (!dedup_read_smaps(na_stream, entries_offset,
++					middle, 1, &smap_entry))
++			return (-1);
++		if (le64_to_cpu(smap_entry.data_end) <= offset)
++			lower = middle + 1;
++		else
++			upper = middle;
+ 	}
+-	return (res);
++	return (lower);
+ }
+ 
+ /*
+@@ -774,10 +772,12 @@ static int dedup_pread_data(ntfs_attr *na_data, off_t offset, u32 data_offset,
+  *	Danger : the last case may require a huge buffer if the compressor
+  *	did not set a safe limit. Windows has apparently set a limit to
+  *	131K bytes.
++ *
++ *	Sets *err if the source buffer is too short.
+  */
+ 
+ static u32 dedup_get_extra(int extra, BOOL moreextra,
+-			const char *buf, u32 *xbuf)
++			const char *buf, u32 buf_size, u32 *xbuf, BOOL *err)
+ {
+ 	u32 extra2;
+ 	u32 cnt;
+@@ -791,10 +791,18 @@ static u32 dedup_get_extra(int extra, BOOL moreextra,
+ 		(*xbuf)++;
+ 	}
+ 	if (cnt == 25) {
++		if ((*xbuf + 2) >= buf_size) {
++			*err = TRUE;
++			return (0);
++		}
+ 						/* add next byte */
+ 		extra2 = buf[*xbuf + 2] & 255;
+ 		cnt += extra2;
+ 		if (extra2 == 255) {
++			if ((*xbuf + 4) >= buf_size) {
++				*err = TRUE;
++				return (0);
++			}
+ 						/* replace by next pair */
+ 			extra2 = (buf[*xbuf + 3] & 255)
+ 				+ ((buf[*xbuf + 4] & 255) << 8);
+@@ -802,6 +810,10 @@ static u32 dedup_get_extra(int extra, BOOL moreextra,
+ 				cnt += extra2 - 277;
+ 				(*xbuf) += 2;
+ 			} else {
++				if ((*xbuf + 8) >= buf_size) {
++					*err = TRUE;
++					return (0);
++				}
+ 						/* replace by next quad */
+ 				extra2 = ((((((buf[*xbuf + 8] & 255L) << 8)
+ 					+ (buf[*xbuf + 7] & 255)) << 8)
+@@ -817,21 +829,17 @@ static u32 dedup_get_extra(int extra, BOOL moreextra,
+ }
+ 
+ /*
+- *		Decompress a buffer.
++ *		Decompress a whole chunk.
+  *
+- *	Must always decompress from the beginning of a chunk, and store
+- *	the uncompressed part before what is requested in order to copy
+- *	repeated sequences.
+- *
+- *	Both compressed buffer and uncompressed buffer are limited to
+- *	131K.
++ *	The uncompressed chunk is limited to 131K, and the caller checks
++ *	that it is fully decompressed.
+  *
+  *	Returns the non-negative count of decompressed bytes,
+  *		or a negative error code.
+  */
+ 
+-static int dedup_decompress(char *target, u32 target_size, u32 skip_size,
+-		const char *buf, u32 buf_size, char *buf_decomp)
++static int dedup_decompress(char *target, u32 target_size,
++		const char *buf, u32 buf_size)
+ {
+ 	u32 pattern;
+ 	s32 credit;
+@@ -850,9 +858,10 @@ static int dedup_decompress(char *target, u32 target_size, u32 skip_size,
+ 	xtgt = 0;
+ 	pattern = 0;
+ 	credit = -4;
++	extra = 0;
+ 	moreextra = FALSE;
+-	err = FALSE;
+-	do {
++	err = !buf_size;
++	while ((xbuf < buf_size) && (xtgt < target_size) && !err) {
+ 		if (credit < 0) {
+ 			pattern += (buf[xbuf] & 255L) << ((credit + 4) << 3);
+ 			if (!++credit)
+@@ -863,17 +872,29 @@ static int dedup_decompress(char *target, u32 target_size, u32 skip_size,
+ 					credit = -4;
+ 					pattern = 0;
+ 				}
++				if ((xbuf + 1) >= buf_size) {
++					err = TRUE;
++					break;
++				}
+ 				mix = ((buf[xbuf + 1] & 255L) << 8)
+ 						+ (buf[xbuf] & 255);
+ 				cnt = (mix & 7) + 3;
+ 				pos = (mix >> 3) + 1;
+ 				if (cnt == 10) {
+-					if (!moreextra)
++					if (!moreextra) {
++						if ((xbuf + 2) >= buf_size) {
++							err = TRUE;
++							break;
++						}
+ 						extra = buf[xbuf + 2] & 255;
++					}
+ 					cnt = dedup_get_extra(extra,
+-						moreextra, buf, &xbuf);
++						moreextra, buf, buf_size,
++						&xbuf, &err);
+ 					moreextra = !moreextra;
+ 				}
++				if (err)
++					break;
+ 				if (pos > xtgt) {
+ 					ntfs_log_error("Invalid reference,"
+ 						" pos 0x%x xtgt 0x%x\n",
+@@ -881,12 +902,12 @@ static int dedup_decompress(char *target, u32 target_size, u32 skip_size,
+ 					err = TRUE;
+ 				} else {
+ 			 /* truncate sequence to fit into the target buffer */
+-					space = target_size + skip_size - xtgt;
++					space = target_size - xtgt;
+ 					if (cnt > space)
+ 						cnt = space;
+ 					for (xseq=0; xseq<cnt; xseq++)
+-						buf_decomp[xtgt + xseq]
+-							= buf_decomp[xtgt
++						target[xtgt + xseq]
++							= target[xtgt
+ 								- pos + xseq];
+ 					xtgt += cnt;
+ 				}
+@@ -896,242 +917,308 @@ static int dedup_decompress(char *target, u32 target_size, u32 skip_size,
+ 					credit = -4;
+ 					pattern = 0;
+ 				}
+-				buf_decomp[xtgt++] = buf[xbuf];
++				target[xtgt++] = buf[xbuf];
+ 			}
+ 		xbuf++;
+-	} while ((xbuf < buf_size)
+-	    && (xtgt < (target_size + skip_size))
+-	    && !err);
+-	if (xtgt > skip_size)
+-		memcpy(target, &buf_decomp[skip_size], xtgt - skip_size);
+-	else {
+-		ntfs_log_error("No uncompressed data,"
+-				" xbuf 0x%x xtgt 0x%x skip_size 0x%x\n",
+-				(int)xbuf,(int)xtgt,(int)skip_size);
+-		err = TRUE;
+ 	}
+-	return (err ? -1 : xtgt - skip_size);
++	return (err ? -1 : (int)xtgt);
+ }
+ 
+ /*
+- *		Read a compressed chunk of data
++ *		Read a whole chunk and check it against its stream map entry
+  *
+- *	Reading is interrupted at the end of the initial chunk. A new
+- *	request has to be made to get the end (which may be located in
+- *	a different file or not compressed).
++ *	The chunk is decompressed if needed, then its SHA-512 digest is
++ *	compared with the one recorded in the stream map entry, so that
++ *	no wrong data is ever returned.
+  *
+- *	Returns a non-negative count of bytes read,
+- *		or a negative error code.
++ *	Returns zero, or a negative error code.
+  */
+ 
+-static s32 dedup_pread_compressed(ntfs_attr *na_data, off_t offset,
+-			u32 data_offset,
++static int dedup_read_chunk(ntfs_volume *vol, const char *guid,
+ 			const struct DEDUP_SMAP_ENTRY *smap_entry,
+-			u64 previous_end, size_t size, char *buf)
++			u32 chunk_size, char *chunk, char *buf_compressed)
+ {
++	char path[MAXPATHSTORE];
+ 	struct DEDUP_CKHR_DATA ckhr_data;
+-	char *buf_compressed;
+-	char *buf_decomp;
+-	size_t read_size;
+-	s32 compressed_size;
+-	u32 decomp_size;
+-	u32 want_size;
+-	s32 r;
+-	s32 res;
+-
+-	res = -1;
+-	r = ntfs_attr_pread(na_data, data_offset,
+-			sizeof(struct DEDUP_CKHR_DATA), &ckhr_data);
+-	if ((r == sizeof(struct DEDUP_CKHR_DATA))
+-	    && (ckhr_data.magic == CKHR_MAGIC)
+-	    && (ckhr_data.payload_size == smap_entry->data_size)
+-	    && !memcmp(ckhr_data.digest, smap_entry->digest, 32)) {
+-		compressed_size = le32_to_cpu(ckhr_data.payload_size);
+-			/* read the full compressed data */
+-		buf_compressed = (char*)malloc_maxed(compressed_size,__LINE__);
+-		if (buf_compressed) {
+-			/*
+-			 * Make sure the temporary buffer is never bigger
+-			 * than the uncompressed block, by truncating the
+-			 * requested size to the end of current block.
+-			 */
+-			decomp_size = size + offset;
+-			want_size = size;
+-			if ((decomp_size + previous_end)
+-					> le64_to_cpu(smap_entry->data_end)) {
+-				decomp_size = le64_to_cpu(smap_entry->data_end)
+-					- previous_end;
+-				want_size = decomp_size - offset;
+-			}
+-			buf_decomp = (char*)malloc_maxed(decomp_size,__LINE__);
+-			if (buf_decomp) {
+-				read_size = compressed_size;
+-				r = ntfs_attr_pread(na_data,
+-					sizeof(struct DEDUP_CKHR_DATA)
+-						+ data_offset,
+-					read_size, buf_compressed);
+-				if (r == (s32)read_size) {
+-					res = dedup_decompress(buf, want_size,
+-						offset, buf_compressed,
+-						compressed_size, buf_decomp);
+-				}
+-				free(buf_decomp);
+-			}
+-			free(buf_compressed);
+-		} else {
+-			res = -ENOMEM;
++	u8 digest[64];
++	ntfs_inode *ni_data;
++	ntfs_attr *na_data;
++	u32 data_offset;
++	u32 stored_size;
++	int res;
++
++	res = -EIO;
++	na_data = (ntfs_attr*)NULL;
++	data_offset = le32_to_cpu(smap_entry->offset);
++	stored_size = le32_to_cpu(smap_entry->data_size);
++	snprintf(path,MAXPATHSTORE,
++			"%s/%s/%s/{%s}.ddp/%s/%08lx.%08lx.ccc",
++			"System Volume Information",
++			"Dedup",
++			"ChunkStore",
++			guid,
++			"Data",
++			(long)le32_to_cpu(smap_entry->id1),
++			(long)le32_to_cpu(smap_entry->id2));
++	ni_data = ntfs_pathname_to_inode(vol, (ntfs_inode*)NULL, path);
++	if (ni_data)
++		na_data = ntfs_attr_open(ni_data, AT_DATA, (ntfschar*)NULL, 0);
++	if (!na_data) {
++		ntfs_log_error("Failed to open dedup data %s\n", path);
++	} else if ((ntfs_attr_pread(na_data, data_offset,
++				sizeof(ckhr_data), &ckhr_data)
++			!= (s64)sizeof(ckhr_data))
++		    || (ckhr_data.magic != CKHR_MAGIC)
++		    || (ckhr_data.payload_size != smap_entry->data_size)
++		    || memcmp(ckhr_data.digest, smap_entry->digest, 32)) {
++		ntfs_log_error("Bad Ckhr data header at 0x%llx in %s\n",
++				(long long)data_offset, path);
++	} else if (!stored_size || (stored_size > MAXMEM)) {
++		ntfs_log_error("Bad chunk size 0x%lx at 0x%llx in %s\n",
++				(long)stored_size, (long long)data_offset,
++				path);
++	} else if (stored_size == chunk_size) {
++		if (ntfs_attr_pread(na_data,
++				data_offset + sizeof(ckhr_data),
++				chunk_size, chunk) == (s64)chunk_size)
++			res = 0;
++		else
++			ntfs_log_error("Failed to read chunk at 0x%llx"
++				" in %s\n", (long long)data_offset, path);
++	} else if (ntfs_attr_pread(na_data, data_offset + sizeof(ckhr_data),
++				stored_size, buf_compressed)
++			!= (s64)stored_size) {
++		ntfs_log_error("Failed to read chunk at 0x%llx in %s\n",
++				(long long)data_offset, path);
++	} else if (dedup_decompress(chunk, chunk_size,
++			buf_compressed, stored_size) != (int)chunk_size) {
++		ntfs_log_error("Failed to decompress chunk at 0x%llx"
++				" in %s\n", (long long)data_offset, path);
++	} else
++		res = 0;
++	if (!res) {
++		sha512((const u8*)chunk, chunk_size, digest);
++		if (memcmp(digest, smap_entry->digest, 32)) {
++			ntfs_log_error("Bad digest for chunk at 0x%llx"
++				" in %s\n", (long long)data_offset, path);
++			res = -EIO;
+ 		}
+-	} else {
+-		ntfs_log_error("Bad Ckhr data header at 0x%llx"
+-				" for offset 0x%llx"
+-				" in file %lld\n",
+-				(long long)data_offset,
+-				(long long)offset,
+-				(long long)na_data->ni->mft_no);
+-		res = -EIO;
+ 	}
++	if (na_data)
++		ntfs_attr_close(na_data);
++	if (ni_data)
++		ntfs_inode_close(ni_data);
+ 	return (res);
+ }
+ 
+ /*
+- *		Get data from a single chunk
++ *		Get a whole chunk, checked against its stream map entry
+  *
+- *	Reading is interrupted at the end of the initial chunk. A new
+- *	request has to be made to get the end (which may be located in
+- *	a different file).
++ *	The last chunk checked is kept : consecutive reads mostly begin
++ *	in the chunk where the previous read ended. The chunk is found
++ *	again by its location and digest, so it may be shared by files.
++ *	ntfs-3g processes requests in a single thread, no locking needed.
+  *
+- *	Returns a non-negative count of bytes read,
+- *		or a negative error code.
++ *	Returns the chunk data, or NULL if it could not be read and checked.
+  */
+ 
+-static int dedup_get_data(ntfs_inode *ni, char *buf, off_t offset, size_t size,
+-			const char *guid, u64 part_begin,
+-			struct DEDUP_SMAP *smap_stream, int smap_cnt)
+-{
+-	char path[MAXPATHSTORE];
+-	struct DEDUP_SMAP_ENTRY *smap_entry;
+-	ntfs_inode *ni_data;
+-	ntfs_attr *na_data;
+-	u64 data_end;
+-	u64 previous_end;
+-	size_t total;
+-	u32 data_offset;
+-	s32 got;
+-	BOOL compressed;
+-	int smaps_available;
+-	int k;
++static struct {
++	BOOL valid;
++	struct DEDUP_SMAP_ENTRY smap_entry;
++	u32 size;
++	char data[MAXMEM];
++} last_chunk;
+ 
+-	total = 0;
+-	got = 0;
+-	/*
+-	 * Locate the first entry whose data_end is
+-	 * greater than wanted offset.
+-	 */
+-	k = 0;
+-	got = 0;
+-	previous_end = part_begin;
+-	smap_entry = smap_stream->entry;
+-	if (smap_cnt <= MAXSMAP)
+-		smaps_available = smap_cnt;
+-	else
+-		smaps_available = MAXSMAP;
+-	while ((k < smaps_available)
+-	    && (le64_to_cpu(smap_entry->data_end)
+-			 <= (u64)(offset + total))) {
+-		previous_end = le64_to_cpu(smap_entry->data_end);
+-		smap_entry++;
+-		k++;
+-		}
+-	if (k < smaps_available) {
+-		data_offset = le32_to_cpu(smap_entry->offset);
+-		data_end = le64_to_cpu(smap_entry->data_end);
+-		compressed = (data_end - previous_end)
+-					!= le32_to_cpu(smap_entry->data_size);
+-		snprintf(path,MAXPATHSTORE,
+-				"%s/%s/%s/{%s}.ddp/%s/%08lx.%08lx.ccc",
+-				"System Volume Information",
+-				"Dedup",
+-				"ChunkStore",
+-				guid,
+-				"Data",
+-				(long)le32_to_cpu(smap_entry->id1),
+-				(long)le32_to_cpu(smap_entry->id2));
+-		ni_data = ntfs_pathname_to_inode(ni->vol, (ntfs_inode*)NULL,
+-				path);
+-		if (ni_data) {
+-			na_data = ntfs_attr_open(ni_data, AT_DATA,
+-						(ntfschar*)NULL, 0);
+-			if (na_data) {
+-				if (compressed)
+-					got = dedup_pread_compressed(na_data,
+-						offset - previous_end + total,
+-						data_offset,
+-						smap_entry,
+-						previous_end,
+-						size - total,
+-						buf + total);
+-				else
+-					got = dedup_pread_data(na_data,
+-						offset - previous_end + total,
+-						data_offset,
+-						smap_entry,
+-						size - total,
+-						buf + total);
+-				ntfs_attr_close(na_data);
+-			}
+-			ntfs_inode_close(ni_data);
+-		}
+-	} else {
+-		got = 0; /* Is this an error case ? */
+-	}
+-	return (got);
++static const char *dedup_get_chunk(ntfs_volume *vol, const char *guid,
++			const struct DEDUP_SMAP_ENTRY *smap_entry,
++			u32 chunk_size, char *buf_compressed)
++{
++	if (last_chunk.valid
++	    && (last_chunk.size == chunk_size)
++	    && (last_chunk.smap_entry.id1 == smap_entry->id1)
++	    && (last_chunk.smap_entry.id2 == smap_entry->id2)
++	    && (last_chunk.smap_entry.offset == smap_entry->offset)
++	    && (last_chunk.smap_entry.data_size == smap_entry->data_size)
++	    && !memcmp(last_chunk.smap_entry.digest, smap_entry->digest, 32))
++		return (last_chunk.data);
++	last_chunk.valid = FALSE;
++	if (dedup_read_chunk(vol, guid, smap_entry, chunk_size,
++			last_chunk.data, buf_compressed))
++		return ((const char*)NULL);
++	last_chunk.smap_entry = *smap_entry;
++	last_chunk.size = chunk_size;
++	last_chunk.valid = TRUE;
++	return (last_chunk.data);
+ }
+ 
+ /*
+  *		Get data from the chunks designated in a reparse entry.
+  *
+- *	Returns a non-negative count of bytes read,
+- *		or a negative error code.
++ *	The stream map may list more chunks than fit in the buffer, it is
++ *	then read as a window of MAXSMAP entries, which is moved along
++ *	when the read goes beyond its last entry.
++ *
++ *	Returns the count of bytes read, which is the requested size
++ *		truncated to the end of the part, or a negative error
++ *		code when any needed data cannot be read and checked.
+  */
+ 
+ static s32 dedup_read_from_entry(ntfs_inode *ni, const char *guid,
+ 			const struct DEDUP_REPARSE_ENTRY *reparse_entry,
+ 			char *buf, size_t size, off_t offset)
+ {
+-	char *buf_stream;
+-	struct DEDUP_SMAP *smap_stream;
++	struct DEDUP_SMAP_ENTRY *window;
++	const struct DEDUP_SMAP_ENTRY *smap_entry;
++	ntfs_inode *ni_stream;
++	ntfs_attr *na_stream;
++	const char *chunk;
++	char *buf_compressed;
+ 	u64 part_begin;
++	u64 part_end;
++	u64 previous_end;
++	u64 data_end;
++	u64 pos;
++	u32 size_smap;
++	u32 offset_stream;
++	u32 entries_offset;
++	u32 smap_cnt;
++	u32 first;
++	u32 loaded;
++	u32 next;
++	s32 found;
++	size_t want;
+ 	size_t total;
+-	s32 got;
+-	s32 res;
+-	int smap_cnt;
++	size_t count;
++	BOOL ok;
+ 
+-	res = 0;
++	part_begin = mergele64(reparse_entry->part_begin_high,
++				reparse_entry->part_begin_low);
++	part_end = mergele64(reparse_entry->part_end_high,
++				reparse_entry->part_end_low);
++	size_smap = le32_to_cpu(reparse_entry->size_smap);
++	if ((offset < 0)
++	    || ((u64)offset < part_begin)
++	    || ((u64)offset >= part_end)
++	    || (size_smap < offsetof(struct DEDUP_SMAP, entry)
++				+ sizeof(struct DEDUP_SMAP_ENTRY))
++	    || ((size_smap - offsetof(struct DEDUP_SMAP, entry))
++				% sizeof(struct DEDUP_SMAP_ENTRY))) {
++		ntfs_log_error("Bad dedup entry for offset 0x%llx"
++				" in file %lld\n",
++				(long long)offset, (long long)ni->mft_no);
++		return (-EIO);
++	}
++	want = size;
++	if (want > part_end - offset)
++		want = part_end - offset;
++	smap_cnt = (size_smap - offsetof(struct DEDUP_SMAP, entry))
++				/ sizeof(struct DEDUP_SMAP_ENTRY);
++	ok = FALSE;
+ 	total = 0;
+-	part_begin = ((u64)le32_to_cpu(reparse_entry->part_begin_high)
+-					<< 32)
+-			+ le32_to_cpu(reparse_entry->part_begin_low);
+-	buf_stream = dedup_fetch_stream(ni->vol, guid,
+-					reparse_entry, offset + total);
+-	if (buf_stream) {
+-		smap_stream = (struct DEDUP_SMAP*)&buf_stream[0x68];
+-		smap_cnt = (le32_to_cpu(reparse_entry->size_smap) - 8)
+-					/sizeof(struct DEDUP_SMAP_ENTRY);
+-		do {
+-			got = dedup_get_data(ni, buf + total,
+-				offset + total, size - total,
+-				guid, part_begin,
+-					smap_stream, smap_cnt);
+-			if (got > 0) {
+-				total += got;
+-				res = total;
+-			} else
+-				if (!total)
+-					res = got;
+-		} while ((got > 0) && (total < size));
+-		free(buf_stream);
++	ni_stream = (ntfs_inode*)NULL;
++	na_stream = (ntfs_attr*)NULL;
++	window = (struct DEDUP_SMAP_ENTRY*)malloc_maxed(
++			MAXSMAP*sizeof(struct DEDUP_SMAP_ENTRY), __LINE__);
++	buf_compressed = (char*)malloc_maxed(MAXMEM, __LINE__);
++	if (window && buf_compressed)
++		ni_stream = dedup_open_stream(ni->vol, guid,
++				le32_to_cpu(reparse_entry->id));
++	if (ni_stream)
++		na_stream = ntfs_attr_open(ni_stream, AT_DATA,
++				(ntfschar*)NULL, 0);
++	offset_stream = (na_stream
++			? dedup_locate_smap(na_stream, reparse_entry) : 0);
++	if (offset_stream) {
++		entries_offset = offset_stream
++				+ sizeof(struct DEDUP_CKHR_STREAM)
++				+ offsetof(struct DEDUP_SMAP, entry);
++		found = dedup_find_smap(na_stream, entries_offset,
++				smap_cnt, offset);
++		ok = (found >= 0) && ((u32)found < smap_cnt);
++		if (!ok)
++			ntfs_log_error("No stream map entry for offset 0x%llx"
++				" in file %lld\n",
++				(long long)offset, (long long)ni->mft_no);
++		first = 0;
++		loaded = 0;
++		next = found;
++		previous_end = part_begin;
++		/*
++		 * The chunk before the one found gives where the found
++		 * one begins : load the window from there.
++		 */
++		if (ok && found) {
++			first = found - 1;
++			loaded = smap_cnt - first;
++			if (loaded > MAXSMAP)
++				loaded = MAXSMAP;
++			ok = dedup_read_smaps(na_stream, entries_offset,
++					first, loaded, window);
++			if (ok)
++				previous_end = le64_to_cpu(window[0].data_end);
++		}
++		while (ok && (total < want)) {
++			if (next >= smap_cnt) {
++				ntfs_log_error("Stream map ends at 0x%llx,"
++					" before 0x%llx in file %lld\n",
++					(long long)previous_end,
++					(long long)part_end,
++					(long long)ni->mft_no);
++				ok = FALSE;
++				break;
++			}
++			if (next >= (first + loaded)) {
++				first = next;
++				loaded = smap_cnt - first;
++				if (loaded > MAXSMAP)
++					loaded = MAXSMAP;
++				ok = dedup_read_smaps(na_stream,
++						entries_offset,
++						first, loaded, window);
++				if (!ok)
++					break;
++			}
++			smap_entry = &window[next - first];
++			data_end = le64_to_cpu(smap_entry->data_end);
++			pos = offset + total;
++			if ((data_end <= previous_end)
++			    || ((data_end - previous_end) > MAXMEM)
++			    || (data_end > part_end)
++			    || (pos < previous_end)
++			    || (pos >= data_end)) {
++				ntfs_log_error("Bad stream map entry %lu"
++					" for offset 0x%llx in file %lld\n",
++					(long)next, (long long)pos,
++					(long long)ni->mft_no);
++				ok = FALSE;
++				break;
++			}
++			chunk = dedup_get_chunk(ni->vol, guid, smap_entry,
++					data_end - previous_end, buf_compressed);
++			if (!chunk) {
++				ok = FALSE;
++				break;
++			}
++			count = data_end - pos;
++			if (count > (want - total))
++				count = want - total;
++			memcpy(buf + total, chunk + (pos - previous_end),
++					count);
++			total += count;
++			previous_end = data_end;
++			next++;
++		}
++	} else {
++		ntfs_log_error("Bad stream for offset 0x%llx in file %lld\n",
++				(long long)offset, (long long)ni->mft_no);
+ 	}
+-	return (res);
++	if (na_stream)
++		ntfs_attr_close(na_stream);
++	if (ni_stream)
++		ntfs_inode_close(ni_stream);
++	free(buf_compressed);
++	free(window);
++	return (ok ? (s32)total : -EIO);
+ }
+ 
+ /*
+@@ -1573,6 +1660,9 @@ static int dedup_read_0103(ntfs_inode *ni, const REPARSE_POINT *reparse,
+ 	size_t inner_len;
+ 	struct dedup103_entries acc;
+ 	char guid[37];
++	size_t total;
++	u64 pos;
++	s32 got;
+ 	int j;
+ 
+ 	memset(&acc, 0, sizeof(acc));
+@@ -1596,19 +1686,44 @@ static int dedup_read_0103(ntfs_inode *ni, const REPARSE_POINT *reparse,
+ 	for (j = 0; guid[j]; j++)
+ 		guid[j] = toupper((unsigned char)guid[j]);
+ 	dedup103_walk_inner(rest, inner_len, ot, &acc, 0);
+-	if (acc.n != 1) {
+-		ntfs_log_error("dedup 0x103: expected 1 data entry, got %d\n",
+-				acc.n);
+-		if (acc.n < 1)
+-			return -EOPNOTSUPP;
++	if (acc.n < 1) {
++		ntfs_log_error("dedup 0x103: no data entry\n");
++		return -EOPNOTSUPP;
++	}
++	/* Each entry covers a part of the file, read from the right one */
++	total = 0;
++	while (total < size) {
++		pos = offset + total;
++		for (j = 0; j < acc.n; j++) {
++			if ((pos >= mergele64(acc.ent[j].part_begin_high,
++					acc.ent[j].part_begin_low))
++			    && (pos < mergele64(acc.ent[j].part_end_high,
++					acc.ent[j].part_end_low)))
++				break;
++		}
++		if (j >= acc.n) {
++			ntfs_log_error("dedup 0x103: no data entry for"
++				" offset 0x%llx in file %lld\n",
++				(long long)pos, (long long)ni->mft_no);
++			return -EIO;
++		}
++		got = dedup_read_from_entry(ni, guid, &acc.ent[j],
++				buf + total, size - total, pos);
++		if (got <= 0)
++			return (got ? got : -EIO);
++		total += got;
+ 	}
+-	return (int)dedup_read_from_entry(ni, guid, &acc.ent[0], buf, size,
+-			offset);
++	return (int)total;
+ }
+ 
+ /*
+  *		Read entry point
+  *	Check input and start processing according to reparse data format.
++ *
++ *	A short count would be taken as the end of file by the kernel, which
++ *	then silently truncates the file. So the readers must return the
++ *	full requested size up to the end of file, anything else is an error.
++ *
+  *	Returns the count of bytes read or a negative error code.
+  */
+ 
+@@ -1622,9 +1737,13 @@ static int dedup_read(ntfs_inode *ni, const REPARSE_POINT *reparse,
+ 	res = -EOPNOTSUPP;
+ 	dedup_reparse = (struct DEDUP_REPARSE*)reparse;
+ 		/* The crc32 was checked while opening, do not check again */
+-	if (ni && reparse && buf
++	if (ni && reparse && buf && (offset >= 0)
+ 	    && (dedup_reparse->reparse_tag == IO_REPARSE_TAG_DEDUP)
+ 	    && (dedup_reparse->length == dedup_reparse->reparse_data_length)) {
++		if (offset >= ni->data_size)
++			return (0);
++		if (size > (u64)(ni->data_size - offset))
++			size = ni->data_size - offset;
+ 		/* Assume the format defines a minor.major type version */
+ 		switch (le16_to_cpu(dedup_reparse->format)) {
+ 		case 0x0201 :
+@@ -1644,6 +1763,13 @@ static int dedup_read(ntfs_inode *ni, const REPARSE_POINT *reparse,
+ 				(int)le16_to_cpu(dedup_reparse->format));
+ 			break;
+ 		}
++		if ((res >= 0) && ((size_t)res != size)) {
++			ntfs_log_error("Short dedup read, 0x%lx bytes instead"
++				" of 0x%lx at 0x%llx in file %lld\n",
++				(long)res, (long)size, (long long)offset,
++				(long long)ni->mft_no);
++			res = -EIO;
++		}
+ 	} else {
+ 		res = -EINVAL;
+ 	}
+-- 
+2.47.3
+

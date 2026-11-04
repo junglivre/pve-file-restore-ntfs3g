@@ -48,7 +48,7 @@ commit. They are release metadata, never an attached asset.
 - A release is never edited or deleted without the repository owner's explicit
   approval. A fix is a new version and a new tag.
 - Patched packages expose versioned feature levels (`daemon (= 2)`,
-  `image (= 3)`, and `plugin (= 1)`); the meta package depends on the minimum
+  `image (= 4)`, and `plugin (= 2)`); the meta package depends on the minimum
   daemon and image levels it requires.
 - Debian version ordering is guaranteed:
   `4.2.8-1 < 4.2.8-1+ntfs3g1 < 4.2.8-2 < 4.2.9-1`. No epoch is used.

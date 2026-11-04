@@ -62,7 +62,7 @@ export RESTORE_IMAGE_VERSION='1.0.0+ntfs3g4'
 export FILE_RESTORE_STATUS='install ok installed'
 export RESTORE_IMAGE_STATUS='install ok installed'
 export FILE_RESTORE_PROVIDES='proxmox-backup-file-restore-ntfs3g (= 4.2.8-1+ntfs3g3), pve-file-restore-ntfs3g-daemon (= 2)'
-export RESTORE_IMAGE_PROVIDES='proxmox-backup-restore-image-ntfs3g (= 1.0.0+ntfs3g4), pve-file-restore-ntfs3g-image (= 3)'
+export RESTORE_IMAGE_PROVIDES='proxmox-backup-restore-image-ntfs3g (= 1.0.0+ntfs3g4), pve-file-restore-ntfs3g-image (= 4)'
 printf '%s\0%s\0' 'try FUSE mount using ntfs-3g' 'remounting with ntfs-3g' \
   > "$TREE/usr/lib/x86_64-linux-gnu/proxmox-backup/file-restore/proxmox-restore-daemon"
 : > "$TREE/usr/lib/x86_64-linux-gnu/proxmox-backup/file-restore/initramfs.img"

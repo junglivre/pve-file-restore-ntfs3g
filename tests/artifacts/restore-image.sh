@@ -10,7 +10,7 @@ deb=$1
 
 version=$(dpkg-deb -f "$deb" Version)
 deb_relation_has "$deb" Provides "proxmox-backup-restore-image-ntfs3g (= $version)"
-deb_relation_has "$deb" Provides 'pve-file-restore-ntfs3g-image (= 3)'
+deb_relation_has "$deb" Provides 'pve-file-restore-ntfs3g-image (= 4)'
 grep -qF 'Maintainer: junglivre <junglivre@users.noreply.github.com>' < <(dpkg-deb -I "$deb")
 
 tmp=$(mktemp -d)

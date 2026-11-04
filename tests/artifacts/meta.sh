@@ -10,5 +10,5 @@ deb=$1
 
 deb_relation_has "$deb" Depends 'initramfs-tools-core'
 deb_relation_has "$deb" Depends 'pve-file-restore-ntfs3g-daemon (>= 2)'
-deb_relation_has "$deb" Depends 'pve-file-restore-ntfs3g-image (>= 3)'
+deb_relation_has "$deb" Depends 'pve-file-restore-ntfs3g-image (>= 4)'
 echo "meta artifact checks passed: $deb"

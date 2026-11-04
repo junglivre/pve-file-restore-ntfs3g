@@ -27,25 +27,41 @@ Project-wide changes that ship with the component releases below:
 - The package exposes the versioned daemon feature level and uses the project
   maintainer identity while retaining Proxmox as `XSBC-Original-Maintainer`.
 
-## restore-image/1.0.0+ntfs3g10
+## restore-image/1.0.0+ntfs3g11
 
 - Rebuilt on the exact upstream restore-image 1.0.0 commit (`c0b6cd8`).
 - The image build enables FUSE and includes `ntfs-3g`, `libfuse3`, and the
   `ntfs-3g-dedup-plugin` shared object in the File Restore initramfs.
-- The package exposes the versioned restore-image feature level and uses the
-  project maintainer identity.
+- Embeds the dedup plugin that reads big deduplicated files correctly
+  (`dedup-plugin/0+git20260721.885c77b-9`) and exposes restore-image feature
+  level 4, so an image with the older plugin can no longer satisfy the
+  metapackage.
+- The package uses the project maintainer identity.
 
-## dedup-plugin/0+git20260721.885c77b-8
+## dedup-plugin/0+git20260721.885c77b-9
 
 - The standalone `ntfs-3g-dedup-plugin` package is built from `885c77b` with
-  the FUSE 3 patch, exposes its versioned feature level, and declares both
-  `ntfs-3g` and its `libntfs-3g` runtime dependency.
+  the FUSE 3 patch, exposes its versioned feature level (now 2), and declares
+  both `ntfs-3g` and its `libntfs-3g` runtime dependency.
+- Fixes deduplicated files bigger than about 37 MiB, which came back silently
+  truncated or with wrong content (and rc 0 from File Restore): the plugin
+  only looked at the first 512 entries of a file's stream map, so a read
+  crossing that point returned a short count, which the kernel takes as the
+  end of file. The stream map is now read through a window that follows the
+  read (`patches/ntfs-3g-dedup-plugin-large-files.patch`).
+- Every chunk is checked against the SHA-512 digest recorded in its stream
+  map entry, and the stream map itself is checked; a read that cannot be
+  completed and checked fails with EIO instead of returning wrong or short
+  data.
 
-## meta/2.1.10
+## meta/2.1.11
 
 - The metapackage depends on the minimum daemon and restore-image feature
-  levels, `initramfs-tools-core`, and `cpio`, which the upstream file-restore
-  postinst uses when rebuilding the initramfs cache.
+  levels (restore-image level 4: the image with the big-file plugin fix),
+  `initramfs-tools-core`, and `cpio`, which the upstream file-restore postinst
+  uses when rebuilding the initramfs cache.
+- `pve-file-restore-ntfs3g-check` only reports ACTIVE with a level 4 restore
+  image.
 - `pve-file-restore-ntfs3g-check --json` reports the stable
   `file_restore.dedup_remount` field, emits JSON `null` for an absent package,
   accepts packages put on hold, and requires a cache newer than both installed
