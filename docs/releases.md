@@ -89,10 +89,11 @@ The `ntfs-3g-plugin-dedup` package is only needed where
 
 ## Fixture and legacy releases
 
-`fixtures/ntfs-dedup-2` is a non-package GitHub Release used by CI and the lab.
-It intentionally contains four fixture assets — `ntfs-dedup.img.zst`, its
-`.sha256` file, `manifest.sha256`, and `dedup-files.txt` — and does not follow
-the two-asset Debian release contract above.
+`fixtures/ntfs-dedup-2` and `fixtures/ntfs-dedup-3` are non-package GitHub
+Releases used by CI and the lab. They intentionally contain fixture assets —
+`ntfs-dedup.img.zst`, its `.sha256` file, `manifest.sha256`, and
+`dedup-files.txt`, plus `large-files.txt` in `ntfs-dedup-3` — and do not
+follow the two-asset Debian release contract above.
 
 The historical `v1.0.0-pve9.2.11` release is a legacy project release, not a
 `<component>/<version>` release. It is retained for history and is not selected

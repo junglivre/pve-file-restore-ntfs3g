@@ -17,9 +17,10 @@ runner or MasterMind credential is used by this public repository.
    `checks` (the `checks` job of `build.yml`; the pull request page shows it as
    `build / checks`). Exempt only the GitHub App or bot used by `BOT_TOKEN` if
    it needs to update `auto/*` branches.
-4. Publish the synthetic fixture as the `fixtures/ntfs-dedup-2` release, as
-   described in `tests/README.md`. It is a four-asset fixture release, not a
-   Debian component release.
+4. Publish the synthetic fixtures as the `fixtures/ntfs-dedup-2` and
+   `fixtures/ntfs-dedup-3` releases, as described in `tests/README.md`. They
+   are fixture releases (four and five assets), not Debian component
+   releases.
 
 ## Workflows
 

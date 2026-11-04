@@ -264,29 +264,36 @@ jobs:
             -v "$PWD/tests/artifacts:/tests/artifacts:ro" \
             debian:13@sha256:4c25275446ca371766b8b093c696782eabce06263fccacb8d5d813b3dc44b308 \
             bash /tests/artifacts/meta-apt.sh /artifacts
-      - name: Download the published fixture release
+      - name: Download the published fixture releases
         if: needs.changes.outputs.fixture == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          mkdir -p fixture-assets
-          gh release download fixtures/ntfs-dedup-2 --repo "${{ github.repository }}" \
-            --dir fixture-assets \
-            --pattern ntfs-dedup.img.zst \
-            --pattern ntfs-dedup.img.zst.sha256 \
-            --pattern manifest.sha256 \
-            --pattern dedup-files.txt
-      - name: Run the fixture with and without the plugin
+          # ntfs-dedup-2: small Dedup files. ntfs-dedup-3: Dedup files of
+          # 100 MiB and more (several stream map windows, two containers),
+          # plus large-files.txt.
+          for fixture in ntfs-dedup-2 ntfs-dedup-3; do
+            mkdir -p "fixture-assets/$fixture"
+            gh release download "fixtures/$fixture" --repo "${{ github.repository }}" \
+              --dir "fixture-assets/$fixture" \
+              --pattern ntfs-dedup.img.zst \
+              --pattern ntfs-dedup.img.zst.sha256 \
+              --pattern manifest.sha256 \
+              --pattern dedup-files.txt
+          done
+          gh release download fixtures/ntfs-dedup-3 --repo "${{ github.repository }}" \
+            --dir fixture-assets/ntfs-dedup-3 --pattern large-files.txt
+      - name: Run the fixtures with and without the plugin
         if: needs.changes.outputs.fixture == 'true'
         run: |
           set -euo pipefail
           docker run --rm --device /dev/fuse --cap-add SYS_ADMIN \
             -v "$PWD/artifacts:/artifacts:ro" \
-            -v "$PWD/fixture-assets:/fixture:ro" \
+            -v "$PWD/fixture-assets:/fixtures:ro" \
             -v "$PWD/tests:/tests:ro" \
             debian:13@sha256:4c25275446ca371766b8b093c696782eabce06263fccacb8d5d813b3dc44b308 \
-            bash -c 'apt-get update -qq && apt-get install -y --no-install-recommends ntfs-3g zstd dpkg && /tests/fixture/ci.sh /artifacts /fixture'
+            bash -c 'apt-get update -qq && apt-get install -y --no-install-recommends ntfs-3g zstd dpkg && /tests/fixture/ci.sh /artifacts /fixtures/ntfs-dedup-2 /fixtures/ntfs-dedup-3'
       - name: Run boot smoke
         if: needs.changes.outputs.smoke == 'true'
         run: |

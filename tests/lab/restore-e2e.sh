@@ -1,5 +1,15 @@
 #!/usr/bin/env bash
 # Extract every fixture manifest path from a real PBS backup and verify bytes.
+#
+# The fixture directory holds manifest.sha256 (every file), dedup-files.txt
+# (the Dedup reparse-point paths) and, optionally, large-files.txt (Dedup files
+# of 100 MiB or more, which span several windows of the plugin's stream map).
+# Non-Dedup files, when the fixture has any, prove that the backup and
+# credentials work: if one of them fails the run is a setup error (rc 3).
+#
+# PVE_RESTORE_ARCHIVE and PVE_RESTORE_PARTITION (for example
+# /drive-sata1.img.fidx and /drive-sata1.img.fidx/part/2) select the disk and
+# partition when the backup has more than one; by default the only ones are used.
 set -Eeuo pipefail
 
 usage() {
@@ -15,16 +25,22 @@ fixture=$4
 ssh_config=${PVE_SSH_CONFIG:-"$HOME/.config/pve-lab/ssh_config"}
 manifest=$fixture/manifest.sha256
 dedup_files=$fixture/dedup-files.txt
+large_files=$fixture/large-files.txt
 [ -f "$manifest" ] || { echo "manifest not found: $manifest" >&2; exit 1; }
 [ -s "$manifest" ] || { echo 'manifest.sha256 is empty' >&2; exit 1; }
 [ -f "$dedup_files" ] || { echo "dedup file list not found: $dedup_files" >&2; exit 1; }
+lists=("$manifest" "$dedup_files")
+if [ -f "$large_files" ]; then
+    lists+=("$large_files")
+fi
 
 remote_dir="/tmp/pve-file-restore-e2e-$$"
 remote_manifest="$remote_dir/manifest.sha256"
 remote_dedup_files="$remote_dir/dedup-files.txt"
+remote_large_files="$remote_dir/large-files.txt"
 ssh -F "$ssh_config" "$node" mkdir -m 700 "$remote_dir"
 copy_status=0
-if scp -q -F "$ssh_config" "$manifest" "$dedup_files" "$node:$remote_dir/"; then
+if scp -q -F "$ssh_config" "${lists[@]}" "$node:$remote_dir/"; then
     copy_status=0
 else
     copy_status=$?
@@ -34,13 +50,18 @@ if [ "$copy_status" -ne 0 ]; then
     exit "$copy_status"
 fi
 
+# ssh does not pass the environment: the restore selection goes as arguments.
 ssh -F "$ssh_config" "$node" bash -s -- "$pbs_storage" "$backup_volid" \
-    "$remote_manifest" "$remote_dedup_files" <<'EOF'
+    "$remote_manifest" "$remote_dedup_files" "$remote_large_files" \
+    "${PVE_RESTORE_ARCHIVE:-}" "${PVE_RESTORE_PARTITION:-}" <<'EOF'
 set -Eeuo pipefail
 pbs_storage=$1
 backup_volid=$2
 manifest=$3
 dedup_file_list=$4
+large_file_list=$5
+restore_archive=$6
+restore_partition=$7
 output_dir=$(mktemp -d)
 storage_block=''
 trap 'rm -rf "$output_dir" "$(dirname "$manifest")"' EXIT
@@ -165,8 +186,8 @@ list_directory() {
     fi
 }
 
-archive=$(normalize_restore_path "${PVE_RESTORE_ARCHIVE:-}")
-if [ -z "${PVE_RESTORE_ARCHIVE:-}" ]; then
+archive=$(normalize_restore_path "$restore_archive")
+if [ -z "$restore_archive" ]; then
     root_list="$output_dir/root-list.json"
     root_entries="$output_dir/root-entries.tsv"
     list_directory / "$root_list" >"$root_entries"
@@ -180,7 +201,7 @@ if [ -z "${PVE_RESTORE_ARCHIVE:-}" ]; then
     archive=$(normalize_restore_path "${archive_candidates[0]}")
 fi
 
-partition=${PVE_RESTORE_PARTITION:-}
+partition=$restore_partition
 if [ -z "$partition" ]; then
     archive_list="$output_dir/archive-list.json"
     archive_entries="$output_dir/archive-entries.tsv"
@@ -223,9 +244,25 @@ while IFS= read -r dedup_path; do
     dedup_total=$((dedup_total + 1))
 done <"$dedup_file_list"
 
+declare -A large_paths=()
+large_total=0
+if [ -f "$large_file_list" ]; then
+    while IFS= read -r large_path; do
+        large_path=${large_path%$'\r'}
+        [ -n "$large_path" ] || continue
+        if [ -z "${dedup_paths[$large_path]+present}" ]; then
+            echo "SETUP ERROR: large file is not a Dedup path: $large_path" >&2
+            exit 3
+        fi
+        large_paths["$large_path"]=1
+        large_total=$((large_total + 1))
+    done <"$large_file_list"
+fi
+
 entries="$output_dir/entries"
 plain_total=0
 manifest_total=0
+large_listed=0
 while IFS=' ' read -r expected path; do
     [ -n "$expected" ] || continue
     [ -n "$path" ] || { echo 'SETUP ERROR: invalid manifest line' >&2; exit 3; }
@@ -237,17 +274,25 @@ while IFS=' ' read -r expected path; do
     if [ -z "${dedup_paths[$path]+present}" ]; then
         plain_total=$((plain_total + 1))
     fi
+    if [ -n "${large_paths[$path]+present}" ]; then
+        large_listed=$((large_listed + 1))
+    fi
 done <"$manifest"
 
-if [ "$dedup_total" -ne 9 ] || [ "$plain_total" -ne 2 ] || [ "$manifest_total" -ne 11 ]; then
-    printf 'SETUP ERROR: expected manifest layout dedup 9, plain 2, total 11; got dedup %s, plain %s, total %s\n' \
-        "$dedup_total" "$plain_total" "$manifest_total" >&2
-    printf 'dedup 0/%s, plain 0/%s\n' "$dedup_total" "$plain_total"
+# Every Dedup and large path must be in the manifest, or the fixture
+# directory is not the one the backup was made from.
+if [ "$dedup_total" -lt 1 ] || [ "$((manifest_total - plain_total))" -ne "$dedup_total" ] \
+    || [ "$large_listed" -ne "$large_total" ]; then
+    printf 'SETUP ERROR: inconsistent fixture: %s Dedup paths (%s in the manifest), %s large paths (%s in the manifest)\n' \
+        "$dedup_total" "$((manifest_total - plain_total))" "$large_total" "$large_listed" >&2
     exit 3
 fi
+printf 'fixture layout: dedup %s (large %s), plain %s, total %s\n' \
+    "$dedup_total" "$large_total" "$plain_total" "$manifest_total"
 
 dedup_passed=0
 plain_passed=0
+large_passed=0
 setup_error=false
 while IFS=$'\t' read -r expected path; do
     # `extract` treats its target as a directory and writes the file inside it
@@ -263,30 +308,40 @@ while IFS=$'\t' read -r expected path; do
         extract_status=$?
     fi
     verified=false
-    if [ "$extract_status" -eq 0 ] && [ -f "$target" ] \
-        && printf '%s  %s\n' "$expected" "$target" | sha256sum -c - >/dev/null; then
-        verified=true
+    got='missing'
+    if [ "$extract_status" -ne 0 ]; then
+        got="extract rc $extract_status"
+    elif [ -f "$target" ]; then
+        got=$(sha256sum "$target")
+        got="${got%% *} $(stat -c %s "$target") bytes"
+        [ "${got%% *}" != "$expected" ] || verified=true
     fi
+    # Big files are checked one at a time; do not keep gigabytes on the node.
+    rm -rf "$target_dir"
+    kind=dedup
+    [ -z "${large_paths[$path]+present}" ] || kind='dedup large'
     if [ -n "${dedup_paths[$path]+present}" ]; then
         if $verified; then
             dedup_passed=$((dedup_passed + 1))
-            printf 'PASS dedup: %s\n' "$path"
+            [ -z "${large_paths[$path]+present}" ] || large_passed=$((large_passed + 1))
+            printf 'PASS %s: %s (%s)\n' "$kind" "$path" "$got"
         else
-            printf 'LOST dedup: %s\n' "$path" >&2
+            printf 'LOST %s: %s (expected %s, got %s)\n' "$kind" "$path" "$expected" "$got" >&2
         fi
     elif $verified; then
         plain_passed=$((plain_passed + 1))
-        printf 'PASS plain: %s\n' "$path"
+        printf 'PASS plain: %s (%s)\n' "$path" "$got"
     else
         setup_error=true
-        printf 'SETUP ERROR: cannot extract or verify non-Dedup file: %s\n' "$path" >&2
+        printf 'SETUP ERROR: cannot extract or verify non-Dedup file: %s (%s)\n' "$path" "$got" >&2
     fi
 done <"$entries"
 
-printf 'dedup %s/9, plain %s/2\n' "$dedup_passed" "$plain_passed"
+printf 'dedup %s/%s (large %s/%s), plain %s/%s\n' "$dedup_passed" "$dedup_total" \
+    "$large_passed" "$large_total" "$plain_passed" "$plain_total"
 if $setup_error; then
     echo 'SETUP ERROR: at least one non-Dedup file could not be extracted; credentials/repository or backup setup is invalid' >&2
     exit 3
 fi
-[ "$dedup_passed" -eq 9 ] && [ "$plain_passed" -eq 2 ]
+[ "$dedup_passed" -eq "$dedup_total" ] && [ "$plain_passed" -eq "$plain_total" ]
 EOF

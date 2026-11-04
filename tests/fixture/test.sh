@@ -81,6 +81,45 @@ fi
 grep -qF 'unexpected failing paths' "$TMP/bad-manifest.out"
 mv "$TMP/manifest.before" "$FIXTURE/manifest.sha256"
 
+# Large Dedup files: listed in large-files.txt and counted in the summary.
+mkdir -p "$GOOD/grande" "$BAD/grande"
+head -c 300000 /dev/zero | tr '\0' 'x' > "$GOOD/grande/big.txt"
+head -c 1000 /dev/zero | tr '\0' 'x' > "$BAD/grande/big.txt"
+big_hash=$(sha256sum "$GOOD/grande/big.txt")
+big_hash=${big_hash%% *}
+cp "$FIXTURE/manifest.sha256" "$TMP/manifest.small"
+cp "$FIXTURE/dedup-files.txt" "$TMP/dedup.small"
+printf '%s  %s\n' "$big_hash" 'grande/big.txt' >> "$FIXTURE/manifest.sha256"
+printf '%s\n' 'grande/big.txt' >> "$FIXTURE/dedup-files.txt"
+printf '%s\n' 'grande/big.txt' > "$FIXTURE/large-files.txt"
+"$SCRIPT" "$TMP/plugin.deb" "$FIXTURE" > "$TMP/large.out"
+grep -qF 'fixture passed with plugin: 3/3 entries OK, 1/1 large Dedup files' "$TMP/large.out"
+
+# A plugin that truncates big files fails the run.
+cp "$BAD/grande/big.txt" "$GOOD/grande/big.txt"
+if "$SCRIPT" "$TMP/plugin.deb" "$FIXTURE" > "$TMP/truncated.out" 2>&1; then
+    echo 'truncated large file unexpectedly passed' >&2
+    exit 1
+fi
+grep -qF 'FAIL grande/big.txt' "$TMP/truncated.out"
+
+# A read error (EIO) is reported as a failure of that path, not a crash.
+write_fake "$BIN/sha256sum" \
+    '#!/usr/bin/env bash' \
+    'for arg in "$@"; do' \
+    "    case \$arg in */grande/big.txt) echo \"sha256sum: \$arg: Input/output error\" >&2; exit 1 ;; esac" \
+    'done' \
+    "exec $(command -v sha256sum) \"\$@\""
+if "$SCRIPT" "$TMP/plugin.deb" "$FIXTURE" > "$TMP/eio.out" 2>&1; then
+    echo 'unreadable large file unexpectedly passed' >&2
+    exit 1
+fi
+grep -qF 'FAIL grande/big.txt (expected '"$big_hash"', got read error: Input/output error)' "$TMP/eio.out"
+grep -qF 'expected 0 failures, got 1' "$TMP/eio.out"
+rm -f "$BIN/sha256sum" "$FIXTURE/large-files.txt"
+mv "$TMP/manifest.small" "$FIXTURE/manifest.sha256"
+mv "$TMP/dedup.small" "$FIXTURE/dedup-files.txt"
+
 printf '%064d  ntfs-dedup.img.zst\n' 0 > "$FIXTURE/ntfs-dedup.img.zst.sha256"
 if "$SCRIPT" none "$FIXTURE" > "$TMP/bad-checksum.out" 2>&1; then
     echo 'bad image checksum unexpectedly passed' >&2
