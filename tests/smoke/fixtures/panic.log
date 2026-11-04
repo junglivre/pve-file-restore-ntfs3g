@@ -1,0 +1,4 @@
+QEMU emulator version 9.2.0
+[init-shim] reached daemon start
+setup basic system environment...
+Kernel panic - not syncing: attempted to kill init!

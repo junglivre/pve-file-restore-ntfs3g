@@ -1,8 +1,7 @@
 name: promote
 
-# Promote a pre-release (testing) to a stable release. Runs in the
-# `production` environment, which requires manual approval. Only promote
-# after the pre-release was tested on the lab cluster.
+# Revalidate a testing release and promote it to stable only after the
+# protected production environment approves the job.
 on:
   workflow_dispatch:
     inputs:
@@ -19,27 +18,10 @@ jobs:
     runs-on: ubuntu-24.04
     environment: production
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Verify assets and promote
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ inputs.tag }}
-        run: |
-          set -euo pipefail
-          case $TAG in
-            file-restore/*|restore-image/*|dedup-plugin/*|meta/*) ;;
-            *) echo "refusing to promote unexpected tag '$TAG'" >&2; exit 1 ;;
-          esac
-
-          gh release view "$TAG" --json isPrerelease,tagName
-          prerelease=$(gh release view "$TAG" --json isPrerelease --jq .isPrerelease)
-          [ "$prerelease" = "true" ] || { echo "$TAG is not a pre-release (already stable?)"; exit 1; }
-
-          # Verify the published SHA256SUMS against the published assets
-          # before promoting.
-          tmp=$(mktemp -d)
-          gh release download "$TAG" --dir "$tmp" --pattern '*.deb' --pattern 'SHA256SUMS'
-          (cd "$tmp" && sha256sum -c SHA256SUMS)
-          rm -rf "$tmp"
-
-          gh release edit "$TAG" --prerelease=false
-          echo "$TAG promoted to stable."
+        run: scripts/promote.sh "$TAG"

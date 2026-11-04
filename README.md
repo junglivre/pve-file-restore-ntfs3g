@@ -2,15 +2,15 @@
 
 Reliable, read-only Proxmox File Restore access to NTFS volumes that the
 in-kernel `ntfs3` driver cannot handle — including Windows Server Data
-Deduplication volumes (reparse point `0x80000013`, format `0x0103`), via an
-`ntfs-3g` plugin.
+Deduplication volumes (reparse point `0x80000013`, format `0x0103`), via
+the `ntfs-3g-dedup-plugin`.
 
 Portuguese documentation: [README.pt-BR.md](README.pt-BR.md).
 
 > [!WARNING]
 > Unofficial custom build. It changes the Proxmox File Restore packages, not
 > the running host kernel. Test in your environment before production. The
-> dedup plugin is a third-party GPL-2.0-only component, not a
+> `ntfs-3g-dedup-plugin` is a third-party GPL-2.0-only component, not a
 > Proxmox-supported feature.
 
 ## What changes
@@ -22,8 +22,8 @@ Portuguese documentation: [README.pt-BR.md](README.pt-BR.md).
    points, so deduplicated files would otherwise be served with wrong
    content. Volumes without dedup stay on the faster `ntfs3`.
 2. `proxmox-backup-restore-image` enables FUSE in the restore kernel and
-   bundles `ntfs-3g`, `libfuse3` and the `ntfs-plugin-80000013.so` dedup
-   plugin in the File Restore initramfs.
+   bundles `ntfs-3g`, `libfuse3` and `ntfs-plugin-80000013.so` from the
+   `ntfs-3g-dedup-plugin` in the File Restore initramfs.
 3. The `pve-file-restore-ntfs3g` metapackage depends on the virtual packages
    `proxmox-backup-file-restore-ntfs3g` and
    `proxmox-backup-restore-image-ntfs3g`, which only the patched builds
@@ -69,6 +69,7 @@ ordering: `4.2.8-1 < 4.2.8-1+ntfs3g1 < 4.2.8-2`. See
 
 ```bash
 apt-mark unhold proxmox-backup-file-restore proxmox-backup-restore-image
+apt purge pve-file-restore-ntfs3g
 apt-get install --allow-downgrades \
   proxmox-backup-file-restore=<official version> \
   proxmox-backup-restore-image=<official version>
@@ -76,24 +77,36 @@ apt-get install --allow-downgrades \
 
 ## Build it yourself
 
-Requirements: Docker, internet, ~35 GB of free disk and several CPU-hours
-for the restore-image component (custom kernel + ZFS tools).
+Requirements: Docker, internet and ~35 GB of free disk. On the GitHub CI
+runner, file-restore (Rust) is the slowest component at about 30 minutes and
+restore-image (custom kernel + ZFS tools) takes 15–20 minutes; the plugin and
+the metapackage take about a minute each. A slower local machine can take
+several times longer.
 
 ```bash
 ./scripts/build.sh --component all        # or: file-restore | restore-image |
                                           #     dedup-plugin | meta
 ```
 
-Packages and `SHA256SUMS` land in `dist/`. The build pins everything through
+Each component writes its package and its own `SHA256SUMS` to
+`dist/<component>/`. The build pins everything through
 `upstream.lock` (exact commits + patch hashes), uses a digest-pinned
-`debian:13` container, and is exactly what CI runs
+`debian:13` container. `--component all` builds all four components; a
+single-component build leaves the other component directories untouched. This
+is the same package builder used by CI
 ([docs/automation.md](docs/automation.md)).
 
 ## Automation
 
 A daily GitHub Actions watch notices new Proxmox versions, checks that the
 patches still apply and opens a bump PR; merging publishes a pre-release
-automatically. Promotion to `stable` is manual and approval-gated. Details:
+automatically. Every pull request always runs the offline shell tests,
+ShellCheck, actionlint and the lock check. Changed package/proof inputs also
+run the relevant artifact checks, the fixture release test, and/or the QEMU
+boot smoke. The smoke requires the restore daemon marker and timeout exit 124;
+when vhost-vsock is available it also checks the HTTP handshake. The complete
+PBS restore is a lab proof, not public CI. Promotion to `stable` is manual and
+approval-gated. Details:
 [docs/automation.md](docs/automation.md).
 
 ## Upstream and licensing
@@ -101,9 +114,9 @@ automatically. Promotion to `stable` is manual and approval-gated. Details:
 - Fallback follows the upstream patch series:
   [pbs-devel](https://lore.proxmox.com/pbs-devel/20260514152510.2273112-1-c.ebner@proxmox.com/T/);
   original issue: [Bugzilla #7544](https://bugzilla.proxmox.com/show_bug.cgi?id=7544).
-- Dedup plugin: [smx-smx/ntfs-3g-dedup-plugin](https://github.com/smx-smx/ntfs-3g-dedup-plugin),
+- `ntfs-3g-dedup-plugin`: [smx-smx/ntfs-3g-dedup-plugin](https://github.com/smx-smx/ntfs-3g-dedup-plugin),
   GPL-2.0-only, with a FUSE 3 patch.
 
 See [LICENSES.md](LICENSES.md). Proxmox and Debian packages retain their
 upstream licenses. No endorsement by Proxmox Server Solutions GmbH, Tuxera
-or the plugin author is claimed.
+or the `ntfs-3g-dedup-plugin` author is claimed.

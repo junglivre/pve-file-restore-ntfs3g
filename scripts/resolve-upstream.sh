@@ -13,14 +13,17 @@ set -Eeuo pipefail
 
 die() { echo "resolve-upstream: $*" >&2; exit 1; }
 
+ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+# shellcheck source=./scripts/lib-lock.sh
+source "$ROOT_DIR/scripts/lib-lock.sh"
+
 [ $# -eq 2 ] || die "usage: $0 <file-restore|restore-image> <upstream version>"
 
 component=$1
 upstream_version=$2
 
 case $component in
-    file-restore) url='https://git.proxmox.com/git/proxmox-backup.git' ;;
-    restore-image) url='https://git.proxmox.com/git/proxmox-backup-restore-image.git' ;;
+    file-restore|restore-image) url=$(lock_source_url "$component") ;;
     *) die "unknown component '$component'" ;;
 esac
 

@@ -1,25 +1,51 @@
 # Test fixtures
 
-## `fixtures/ntfs-dedup.img.zst` (not yet committed)
+## `fixtures/ntfs-dedup-2`
 
-A small NTFS volume image with Windows Server Data Deduplication enabled and
-only synthetic files. Created once, manually, on a lab Windows Server:
+The synthetic Windows Server Data Dedup fixture is published as the
+`fixtures/ntfs-dedup-2` release in `junglivre/pve-file-restore-ntfs3g`. This is
+an auxiliary fixture release, not one of the four Debian component releases;
+it has four assets and no `.deb` or `SHA256SUMS` contract:
 
-1. Create a small VHDX, format it NTFS, enable Dedup
-   (`Enable-DedupVolume`), copy synthetic text/binary files onto it and run
-   `Start-DedupJob -Type Optimization`. Wait until the files are reparse
-   points (`System Volume Information/Dedup` exists).
-2. Record the expected checksums of the deduplicated files in
-   `fixtures/ntfs-dedup.sha256` (paths relative to the volume root).
-3. Detach, compress: `zstd -19 ntfs-dedup.img`, commit both files.
+- `ntfs-dedup.img.zst`, a bare NTFS partition image;
+- `ntfs-dedup.img.zst.sha256`, the image checksum;
+- `manifest.sha256`, UTF-8/LF entries in the form `<sha256>  <relative path>`;
+- `dedup-files.txt`, the nine Dedup reparse-point paths.
 
-**The fixture contains only synthetic files. Never put client data in it.**
+The image is not stored in this repository. A local reference copy is kept in
+the lab fixture directory. `tests/fixture/run.sh` verifies the image checksum,
+requires a successful read-only mount, and checks that without
+`ntfs-3g-dedup-plugin` only the nine listed Dedup paths fail, while with it all
+eleven entries match. CI runs both modes against the exact plugin package
+built or consumed by that run.
 
-## What CI does with it
+## `fixtures/ntfs-dedup-3`
 
-`build.yml` mounts the image read-only with `ntfs-3g` in a Debian 13
-container that has the freshly built `ntfs-3g-plugin-dedup` installed, then
-runs `sha256sum -c fixtures/ntfs-dedup.sha256`. Wrong content from a missing
-or broken plugin fails the job.
+Big deduplicated files, from a Windows Server 2022 volume made by the lab
+script `fixture-big.ps1` (deterministic content). Same assets as
+`ntfs-dedup-2`, plus `large-files.txt`, the Dedup paths of 100 MiB or more:
 
-While the fixture is absent, the step is skipped with a warning.
+- five files of 100 to 104 MiB (1,199 to 1,344 chunks each, three 512-entry
+  windows of the plugin's stream map): text that the chunk store keeps
+  compressed, one with random blocks (stored uncompressed), one made of two
+  other files, an exact copy, and 100 MiB of random data whose chunks fill
+  the first chunk-store container and continue in a second one;
+- a 24 MiB and a 200 KiB Dedup file, and two non-Dedup files.
+
+The free clusters of the image are zeroed (`$Bitmap`); allocated clusters are
+the bytes Windows wrote. With the plugin before
+`patches/ntfs-3g-dedup-plugin-large-files.patch` the five large files come
+back with a wrong hash and no read error; with it all nine entries match.
+`tests/fixture/run.sh` counts a read error (EIO) as a failure of that path
+and reports how many large files matched.
+
+## What CI does
+
+Every pull request runs `tests/run-all.sh`, which runs ShellCheck, actionlint,
+the lock check and every offline unit-test suite. When a component or proof
+input changes, the artifact job verifies the packages, tests the metapackage
+against official and patched APT repositories, downloads both fixture releases,
+runs them with and without `ntfs-3g-dedup-plugin`, and/or boots the restore image
+under QEMU. The boot proof accepts only timeout rc 124, requires a log line
+emitted by the restore daemon itself, and uses a vsock handshake when the
+runner provides vhost-vsock. The full PBS restore is a lab proof, not CI.

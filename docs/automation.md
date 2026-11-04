@@ -1,93 +1,93 @@
 # Automation (GitHub Actions)
 
-All workflows run on GitHub-hosted `ubuntu-24.04` runners (free for public
-repositories: 4 vCPU, 16 GB RAM, 14 GB SSD, 6 h per job). No self-hosted
-runner: on a public repository it would expose the machine to third-party
-PRs. No MasterMind tokens exist in this repository.
+All workflows run on GitHub-hosted `ubuntu-24.04` runners. No self-hosted
+runner or MasterMind credential is used by this public repository.
 
 ## One-time setup (repository owner)
 
-1. **`BOT_TOKEN` secret** (Actions): a fine-grained PAT or GitHub App token
-   restricted to this repository, with `contents`, `pull-requests` and
-   `issues` write. Used by `upstream-watch.yml` to open bump PRs — PRs
-   created by `GITHUB_TOKEN` would not trigger CI.
-2. **`production` environment** (Settings → Environments): add yourself as a
-   required reviewer. `promote.yml` runs in this environment, so promotion to
-   stable always waits for explicit approval.
-3. Enable **auto-merge** in the repository settings (used for
-   `upstream-bump` PRs once checks are green).
+1. Create the **`production` environment** and add the repository owner as a
+   required reviewer. `promote.yml` cannot make a stable release without that
+   approval.
+2. Set the Actions **`BOT_TOKEN` secret** to a fine-grained PAT or GitHub App
+   token restricted to this repository, with `contents`, `pull-requests`, and
+   `issues` write. The watcher uses it because a PR made with `GITHUB_TOKEN`
+   does not trigger CI or keep the scheduled workflow alive.
+3. Enable auto-merge. Protect `master` with a ruleset that requires pull
+   requests, disallows direct pushes, and requires the status check named
+   `checks` (the `checks` job of `build.yml`; the pull request page shows it as
+   `build / checks`). Exempt only the GitHub App or bot used by `BOT_TOKEN` if
+   it needs to update `auto/*` branches.
+4. Publish the synthetic fixtures as the `fixtures/ntfs-dedup-2` and
+   `fixtures/ntfs-dedup-3` releases, as described in `tests/README.md`. They
+   are fixture releases (four and five assets), not Debian component
+   releases.
 
 ## Workflows
 
 ### `upstream-watch.yml` — daily (`17 4 * * *`) + manual
 
-`scripts/upstream-watch.sh` compares `upstream.lock` with:
+`scripts/upstream-watch.sh` compares `upstream.lock` with the Proxmox trixie
+`pve-no-subscription` package index and the pinned source ref of
+`smx-smx/ntfs-3g-dedup-plugin` (currently `refs/pull/1/head`). It resolves
+release commits and runs `git apply --check` before changing any pin.
 
-- the `Packages.gz` of `pve-no-subscription` (trixie) for
-  `proxmox-backup-file-restore` and `proxmox-backup-restore-image`;
-- the tip of `main` of `smx-smx/ntfs-3g-dedup-plugin`.
+All compatible changes from one run are committed to one `auto/<date>` branch
+and one `upstream-bump` PR. The watcher force-pushes only that `auto/*` branch.
+It updates an existing open issue with the same title instead of creating
+duplicates. If GitHub refuses auto-merge, it opens or updates an issue and
+leaves the PR for review.
 
-On a new version it: resolves the release commit
-(`scripts/resolve-upstream.sh`), checks the patches still apply, updates
-`upstream.lock` on a branch `auto/<component>-<version>` and opens a PR
-labelled `upstream-bump` (auto-merge enabled).
+A `workflow_dispatch` run accepts:
 
-Human-review cases (issue instead of a PR):
+- `simulate_from`: comma-separated `component=upstream-version` pairs, for
+  example `file-restore=4.2.8-2`; creates a draft simulation PR and never
+  enables auto-merge;
+- `dry_run`: checks candidates without creating a branch, PR, or issue.
 
-- the release commit is not found;
-- a patch no longer applies;
-- `disk.rs` already mentions `ntfs-3g` — upstream incorporated the fallback,
-  and our daemon patch shrinks to the dedup detection (see
-  [Bugzilla #7544](https://bugzilla.proxmox.com/show_bug.cgi?id=7544) and the
-  pbs-devel fallback series).
+A dedup-plugin pin update also increments the restore-image `ntfs3g` patch
+revision because the plugin is embedded in that image.
 
-Scheduled workflows are disabled after 60 days of repository inactivity, so
-the workflow commits a timestamp to `status/last-check` whenever the last
-commit is older than 45 days.
+### `build.yml` — pull requests and reusable calls
 
-### `build.yml` — PRs, pushes to master, `workflow_call`
+Builds only affected components, writing each component to its own
+`dist/<component>/` directory with its own `SHA256SUMS`. The restore image is
+also rebuilt whenever `dedup-plugin` changes. There is no ineffective cargo
+cache: the Rust build runs in its actual container work directory.
 
-Builds only what changed in `upstream.lock`, `patches/` or `packaging/`:
+The `checks` job runs `tests/run-all.sh` on every pull request. That includes
+ShellCheck, actionlint, all offline unit suites, and the lock check against the
+PR base. When the change filter marks the run heavy, artifact proofs validate
+the Debian packages, build local APT repositories with official and patched
+packages to test the metapackage boundary, run the published fixture with and
+without `ntfs-3g-dedup-plugin`, and/or run the QEMU boot smoke.
 
-- `build-file-restore` — Rust workspace of `proxmox-backup` in the
-  digest-pinned `debian:13` container; cargo cache keyed on the lock +
-  patch hash.
-- `build-restore-image` — the heavy one (kernel, ZFS, initramfs; ~35 GB,
-  hours). Frees runner toolchains (`dotnet`, `android`, `ghc`,
-  `hostedtoolcache`), puts `WORK_DIR` and the Docker `data-root` on `/mnt`,
-  logs `df -h` before and after. If it ever stops fitting: (1) split the ZFS
-  tools build into its own job passing an artifact, (2) a paid larger runner
-  for this job only, (3) local `scripts/build.sh` + manual upload.
-- `build-dedup-plugin`, `build-meta` — light.
-- `test` — static checks (`strings` on the daemon, `lsinitramfs` contents,
-  `Provides:` present), metapackage dependency test (must fail with official
-  packages, must succeed with ours), the dedup fixture test (skipped with a
-  warning while `tests/fixtures/ntfs-dedup.img.zst` is absent — see
-  `tests/README.md`), and a QEMU boot smoke test of the restore kernel +
-  initramfs (fails on kernel panic; requires the daemon to appear in the
-  boot log).
+The boot smoke appends the freshly built daemon to the image's newc initramfs,
+starts QEMU, requires the daemon's `setup basic system environment...` marker,
+and accepts only timeout exit status 124. It rejects panic, setup failure and
+missing-daemon logs. If `/dev/vhost-vsock` is available, it also requires an
+HTTP status response from the daemon; without it, the smoke explicitly checks
+daemon execution only. The complete PBS restore is a lab validation before
+promotion, not public CI.
 
-The full end-to-end test (`proxmox-file-restore` against a real PBS) stays
-out of CI for now; it runs on the lab cluster before promotion.
+The full restore against a real PBS and a deduplicated NTFS volume is a lab
+validation before promotion, not public CI.
 
 ### `release.yml` — push to master touching `upstream.lock`
 
-Calls `build.yml`, then creates the tags `<component>/<version>` and
-pre-releases with the `.deb`, `SHA256SUMS`, build log, upstream commit and
-the `CHANGELOG.md` section (see `docs/releases.md`). Opens an issue
-announcing the pre-release with the promote link.
+Calls `build.yml`, then creates testing pre-releases tagged exactly
+`<component>/<version>`. Each release contains only its one `.deb` and
+`SHA256SUMS`; the changelog section and upstream commit are release notes.
 
 ### `promote.yml` — manual, approval-gated
 
-`workflow_dispatch` with a tag, in the `production` environment. Verifies
-the published `SHA256SUMS` against the published `.deb`, then
-`gh release edit <tag> --prerelease=false`. Only after lab testing.
+A dispatch with a release tag runs in the `production` environment, verifies
+published checksums, then clears the pre-release flag. Run it only after lab
+validation.
 
 ## Security
 
 - Third-party actions are pinned by commit SHA.
-- `permissions:` are minimal per job (`contents: read` by default; `write`
-  only in the watcher, release and promote jobs).
-- PRs from forks run build+test without secrets (GitHub default).
-- Nothing secret is ever committed; no MasterMind infrastructure is
-  referenced by the workflows.
+- Permissions are scoped per workflow.
+- Fork PRs do not receive secrets.
+- Release data and logs never contain client information, credentials, or
+  MasterMind infrastructure details.
