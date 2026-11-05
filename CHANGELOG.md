@@ -6,6 +6,11 @@ and asset contract.
 
 ## Unreleased
 
+## restore-image/1.1.0+ntfs3g1
+
+- Upstream bump; selected patch set: patches/next/proxmox-backup-restore-image-ntfs3g.patch. Previous package version: `1.0.0+ntfs3g11`; upstream commit: `029559ce22feb86afe8e6d5c4767ad5e95b120a5`.
+
+
 Project-wide changes that ship with the component releases below:
 
 - Component builds write one package and one `SHA256SUMS` to each
